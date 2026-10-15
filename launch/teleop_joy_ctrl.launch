@@ -1,0 +1,81 @@
+<launch>
+  <arg name="joy_topic" default="/joy_teleop/joy" />
+  <arg name="cmd_vel_topic" default="/teleop_joy_ctrl/cmd_vel" />
+  <arg name="config" default="$(find teleop_joy_ctrl)/config/default.yaml" />
+  <arg name="twist_mux_config" default="$(find teleop_joy_ctrl)/config/twist_mux_takeover.yaml" />
+  <arg name="robot_ip" default="192.168.1.80" />
+  <arg name="robot_namespace" default="" />
+
+  <arg name="start_arm_bringup" default="false" />
+  <arg name="start_light_controller" default="true" />
+  <arg name="start_video_manager" default="true" />
+  <arg name="start_hybrid_video_manager" default="true" />
+  <arg name="start_legacy_video_manager" default="false" />
+  
+  <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
+  <arg name="start_takeover_mux" default="true" />
+  <arg name="restore_system_teleop_on_shutdown" default="true" />
+  <arg name="system_teleop_package" default="robot_driver" />
+  <arg name="system_teleop_launch" default="teleop.launch" />
+  <arg name="system_teleop_restore_delay" default="1.0" />
+  <node if="$(arg start_takeover_mux)"
+        pkg="twist_mux"
+        type="twist_mux"
+        name="twist_mux"
+        output="screen">
+    <rosparam command="load" file="$(arg twist_mux_config)" />
+    <remap from="cmd_vel_out" to="/bulldog_velocity_controller/cmd_vel" />
+  </node>
+  <node if="$(arg restore_system_teleop_on_shutdown)"
+        pkg="teleop_joy_ctrl"
+        type="restore_system_teleop_on_shutdown.py"
+        name="restore_system_teleop_on_shutdown"
+        output="screen">
+    <param name="enabled" value="$(arg restore_system_teleop_on_shutdown)" />
+    <param name="package" value="$(arg system_teleop_package)" />
+    <param name="launch_file" value="$(arg system_teleop_launch)" />
+    <param name="delay" value="$(arg system_teleop_restore_delay)" />
+  </node>
+  <include if="$(arg start_arm_bringup)"
+           file="$(find dobot_v4_bringup)/launch/bringup_v4.launch">
+    <arg name="robotIp" value="$(arg robot_ip)" />
+    <arg name="robotName" value="$(arg robot_namespace)" />
+  </include>
+
+  <node pkg="teleop_joy_ctrl"
+        type="teleop_joy_ctrl_node.py"
+        name="teleop_joy_ctrl_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="joy_topic" value="$(arg joy_topic)" />
+    <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+    <param name="arm/robot_namespace" value="$(arg robot_namespace)" />
+  </node>
+
+  <group if="$(arg start_video_manager)">
+   <!-- 下面的 -->
+    <include if="$(arg start_hybrid_video_manager)" 
+             file="$(find hybrid_video_recorder)/launch/hybrid_video_recorder.launch">
+      <arg name="config" value="$(arg hybrid_video_config)" />
+    </include>
+
+    <!-- Set start_hybrid_video_manager:=false and start_legacy_video_manager:=true to roll back. -->
+    <group if="$(arg start_legacy_video_manager)">
+      <node unless="$(arg start_hybrid_video_manager)"
+            pkg="teleop_joy_ctrl"
+            type="video_recording_manager_node.py"
+            name="video_recording_manager_node"
+            output="screen">
+        <rosparam command="load" file="$(arg config)" />
+      </node>
+    </group>
+  </group>
+
+  <node if="$(arg start_light_controller)"
+        pkg="teleop_joy_ctrl"
+        type="light_serial_controller_node.py"
+        name="light_serial_controller_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

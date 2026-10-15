@@ -1,0 +1,32 @@
+# teleop_joy_ctrl takeover mux configuration.
+# This launch starts a node named /twist_mux to replace the boot-time mux.
+# teleop_joy_ctrl/cmd_vel wins only while a shoulder button claims manual control.
+# After release, one zero command is sent and publishing stops so navigation can resume.
+
+topics:
+  - name: teleop_joy_ctrl
+    priority: 254
+    timeout: 0.3
+    topic: teleop_joy_ctrl/cmd_vel
+  - name: joy_original
+    priority: 20
+    timeout: 0.5
+    topic: joy_teleop/cmd_vel
+  - name: interactive_marker
+    priority: 10
+    timeout: 1.0
+    topic: gps/cmd_vel
+  - name: autonomy
+    priority: 2
+    timeout: 0.5
+    topic: platform_control/cmd_vel
+  - name: external
+    priority: 1
+    timeout: 0.5
+    topic: cmd_vel
+
+locks:
+  - name: e_stop
+    priority: 255
+    timeout: 0.0
+    topic: e_stop

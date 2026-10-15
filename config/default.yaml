@@ -1,0 +1,139 @@
+# First-version defaults. Confirm the real joystick mapping with:
+#   rostopic echo /joy_teleop/joy
+
+joy_topic: /joy_teleop/joy
+cmd_vel_topic: /teleop_joy_ctrl/cmd_vel
+state_topic: /teleop_joy_ctrl/state
+debug_topic: /teleop_joy_ctrl/debug
+
+publish_rate: 20.0
+joy_timeout: 0.5
+axis_deadzone: 0.08
+adjust_repeat_interval: 0.20
+left_trigger_pressed_threshold: 0.95
+debug_success_logs: true
+chassis_debug_interval: 1.0
+
+axes:
+  left_x: 0
+  left_y: 1
+  left_trigger: 2
+  dpad_x: 6
+  dpad_y: 7
+
+buttons:
+  a: 0
+  b: 1
+  x: 2
+  y: 3
+  left_shoulder: 4
+  right_shoulder: 5
+  start: 7
+  home: 8
+  right_stick: 10
+
+chassis:
+  holonomic: false
+  low_speed_scale: 0.60
+  high_speed_scale: 1.0
+  max_linear_speed: 0.4
+  min_linear_speed: 0.05
+  max_linear_speed_limit: 3.0
+  linear_speed_step_min: 0.02
+  linear_speed_step_ratio: 0.10
+  max_angular_speed: 0.8
+  min_angular_speed: 0.05
+  max_angular_speed_limit: 4.0
+  angular_speed_step_min: 0.05
+  angular_speed_step_ratio: 0.10
+
+camera:
+  exposure_topic: /camera/exposure_cmd
+  gain_topic: /camera/gain_cmd
+  exposure_state_topic: /camera/exposure_state
+  gain_state_topic: /camera/gain_state
+  exposure_default: 35000.0
+  exposure_min: 20.0
+  exposure_max: 50000.0
+  exposure_step_min: 100.0
+  exposure_step_ratio: 0.06
+  gain_default: 15.0
+  gain_min: 0.0
+  gain_max: 24.0
+  gain_step_min: 0.5
+  gain_step_ratio: 0.04
+
+arm:
+  enabled: true
+  robot_namespace: ""
+  service_prefix: /dobot_v4_bringup
+  command_settle_time: 0.3
+
+light:
+  enabled: true
+  interface: topic
+  serial_port: /dev/light_port
+  baud_rate: 9600
+  line_ending: "\n"
+  command_delay: 0.02
+  power_brightness_delay: 0.05
+  power_publish_repeat: 2
+  power_publish_repeat_interval: 0.05
+  on_cmd: set,onall
+  off_cmd: set,offall
+  brightness_cmd_template: set,stepall,{value}
+  power_topic: /light/power_cmd
+  brightness_topic: /light/brightness_cmd
+  serial_state_topic: /light/serial_state
+  serial_debug_topic: /light/serial_debug
+  debug_success_logs: true
+  assume_initial_on: true
+  brightness_default: 0.2
+  home_restore_brightness: 0.2
+  off_brightness_epsilon: 0.001
+  brightness_min: 0.0
+  brightness_max: 1.0
+  brightness_output_min: 0
+  brightness_output_max: 255
+  brightness_step: 0.02
+  send_brightness_on_power_on: false
+  send_brightness_when_off: false
+
+video:
+  enabled: true
+  double_click_interval: 0.4
+  long_press_duration: 1.5
+  camera_workspace: /home/shansu/catkin_ws
+  python_executable: /home/shansu/miniconda3/envs/detection/bin/python
+  image_topic: /camera/image_raw
+  camera_node_name: /camera_stream_node
+  detector_node_name: /yolo_detector_node
+  state_topic: /teleop_joy_ctrl/video/state
+  status_topic: /teleop_joy_ctrl/video/status
+  output_dir_topic: /teleop_joy_ctrl/video/output_dir
+  start_service: /teleop_joy_ctrl/video/start
+  pause_service: /teleop_joy_ctrl/video/pause
+  resume_service: /teleop_joy_ctrl/video/resume
+  stop_service: /teleop_joy_ctrl/video/stop
+  detector_pause_service: /yolo_detector_node/recording/pause
+  detector_resume_service: /yolo_detector_node/recording/resume
+  detector_stop_service: /yolo_detector_node/recording/stop
+  detector_state_topic: /yolo_detector_node/recording/state
+  detector_output_dir_topic: /yolo_detector_node/recording/output_dir
+  camera_ready_timeout: 10.0
+  detector_ready_timeout: 30.0
+  # NoMachine/本地图形终端下保留YOLO预览窗口；无显示终端改为 true。
+  detector_headless: false
+  # 手动启动 camera_stream 与 yolo_detector.py --save-video 后，允许R3接管其录像服务。
+  adopt_existing_detector: true
+  # Must exceed the YOLO FFmpeg finalization timeout during an R3 long-press stop.
+  detector_service_timeout: 45.0
+  detector_shutdown_service: /yolo_detector_node/recording/shutdown
+  detector_exit_timeout: 12.0
+  manager_command_timeout: 60.0
+  process_stop_timeout: 5.0
+  cleanup_stale_recording_nodes: true
+  stale_node_cleanup_timeout: 5.0
+  force_kill_stale_recording_nodes: true
+  force_kill_timeout: 2.0
+  cleanup_unreachable_stale_recording_nodes: true

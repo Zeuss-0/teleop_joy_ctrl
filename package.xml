@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>teleop_joy_ctrl</name>
+  <version>0.1.0</version>
+  <description>
+    ROS1 joystick controller for chassis teleoperation, camera parameter tuning,
+    Dobot arm enable/disable/error-clear commands, and light-control placeholders.
+  </description>
+
+  <maintainer email="todo@example.com">todo</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>dobot_v4_bringup</depend>
+
+  <exec_depend>rosnode</exec_depend>
+  <exec_depend>rosgraph</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
+  <exec_depend>hybrid_video_recorder</exec_depend>
+</package>
