@@ -6,7 +6,7 @@ ROS1 gamepad control for the chassis, Dobot arm, camera, light, and video record
 
 ## Quick Start
 
-Requires working base/joystick drivers, `dobot_v4_bringup` in `test_ws`, `mvs` in `catkin_ws`, and `teleop_joy_ctrl` plus `hybrid_video_recorder` in `moma_ws`. Recording requires FFmpeg.
+Requires working base/joystick drivers, `dobot_v4_bringup` in an arm workspace, `mvs` in a camera workspace, and `teleop_joy_ctrl` plus `hybrid_video_recorder` in this package's workspace. The `~/test_ws`, `~/catkin_ws`, and `~/moma_ws` paths below are examples; replace them with the directories on the robot. Recording requires FFmpeg. See [Paths on a new machine](#paths-on-a-new-machine).
 
 Start the camera in terminal 1:
 
@@ -58,11 +58,13 @@ Manual motion publishes `/teleop_joy_ctrl/cmd_vel` while a shoulder button is he
 
 The default backend is `hybrid_video_recorder`. Start `camera_stream` separately before recording. YOLO is optional and runs independently.
 
-Videos are saved under:
+Videos are saved under the camera package recordings directory:
 
 ```text
-/home/shansu/catkin_ws/src/mvs/scripts/recordings/<timestamp>/
+<camera_ws>/src/mvs/scripts/recordings/<timestamp>/
 ```
+
+`<camera_ws>` is the catkin workspace that contains `mvs`, for example `~/catkin_ws`.
 
 | File | Content | During pause |
 | --- | --- | --- |
@@ -74,7 +76,8 @@ Both workers keep subscribing to `/camera/image_raw`; pause affects only aimed-v
 To save a complete YOLO-annotated video, run this in another terminal with the camera workspace sourced:
 
 ```bash
-rosrun --prefix "/home/shansu/miniconda3/envs/detection/bin/python" \
+# Detection interpreter, for example ~/miniconda3/envs/detection/bin/python
+rosrun --prefix "$DETECTION_PYTHON" \
   mvs yolo_detector.py --save-yolo-video
 ```
 
@@ -88,6 +91,37 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
 ```
 
 Legacy mode starts camera/YOLO on demand and saves raw, YOLO, and aimed videos. With `video.adopt_existing_detector: true`, it can also attach to a manually started `yolo_detector.py --save-video` session.
+
+## Paths on a new machine
+
+`~/test_ws`, `~/catkin_ws`, and `~/moma_ws` in the examples are workspace locations. Point them at the arm workspace (`dobot_v4_bringup`), the camera workspace (`mvs`), and the workspace that contains this package.
+
+Legacy recording starts `camera_stream` and `yolo_detector.py` from the camera workspace. The default hybrid recorder does not launch those processes. Each legacy path is resolved in this order:
+
+1. Launch argument, when it is non-empty.
+2. Non-empty value in `config/default.yaml` (`~` and `$VARS` are expanded).
+3. Environment variable.
+4. Automatic discovery.
+
+| Path | Launch arg | YAML | Environment | Discovery |
+| --- | --- | --- | --- | --- |
+| Camera workspace | `camera_workspace` | `video.camera_workspace` | `TELEOP_CAMERA_WORKSPACE` | Catkin workspace that contains `rospack find mvs`, otherwise `~/catkin_ws` when `devel/setup.bash` is there |
+| Detection Python | `python_executable` | `video.python_executable` | `TELEOP_DETECTION_PYTHON` | Active conda env named `detection`, otherwise `detection` under `~/miniconda3`, `~/anaconda3`, `~/miniforge3`, `~/mambaforge`, or `~/micromamba` |
+
+```bash
+roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
+  start_hybrid_video_manager:=false \
+  start_legacy_video_manager:=true \
+  camera_workspace:=~/catkin_ws \
+  python_executable:=~/miniconda3/envs/detection/bin/python
+```
+
+The same values can be exported before launch. Leave the YAML entries empty so the repository stays free of machine-specific paths.
+
+```bash
+export TELEOP_CAMERA_WORKSPACE="$HOME/catkin_ws"
+export TELEOP_DETECTION_PYTHON="$HOME/miniconda3/envs/detection/bin/python"
+```
 
 ## Configuration and Checks
 
@@ -105,3 +139,7 @@ rostopic hz /camera/image_raw
 ```
 
 If recording receives no frames, check the camera topic first. For arm failures, check Dobot TCP mode and connectivity. Terminal logs are in Chinese.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

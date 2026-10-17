@@ -6,7 +6,7 @@ ROS1 手柄总控功能包，用于底盘运动、Dobot 机械臂、相机参数
 
 ## 快速启动
 
-需要底盘和手柄驱动已运行，`test_ws` 中有 `dobot_v4_bringup`，`catkin_ws` 中有 `mvs`，`moma_ws` 中有 `teleop_joy_ctrl` 和 `hybrid_video_recorder`。录像需要安装 FFmpeg。
+需要底盘和手柄驱动已运行，机械臂工作空间中有 `dobot_v4_bringup`，相机工作空间中有 `mvs`，本功能包所在工作空间中有 `teleop_joy_ctrl` 和 `hybrid_video_recorder`。下文的 `~/test_ws`、`~/catkin_ws`、`~/moma_ws` 是示例路径，换机器时改成现场目录。录像需要安装 FFmpeg。路径覆盖方式见[在新机器上配置路径](#在新机器上配置路径)。
 
 终端 1：启动相机。
 
@@ -58,11 +58,13 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch start_arm_bringup:=false
 
 默认使用 `hybrid_video_recorder`，录像前需单独启动 `camera_stream`。YOLO 为独立的可选节点。
 
-保存目录：
+保存目录为相机功能包下的录像目录：
 
 ```text
-/home/shansu/catkin_ws/src/mvs/scripts/recordings/<时间戳>/
+<camera_ws>/src/mvs/scripts/recordings/<时间戳>/
 ```
+
+`<camera_ws>` 是包含 `mvs` 的 catkin 工作空间，例如 `~/catkin_ws`。
 
 | 文件 | 内容 | 暂停时 |
 | --- | --- | --- |
@@ -74,7 +76,8 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch start_arm_bringup:=false
 如需保存完整的 YOLO 检测视频，在另一个已加载相机工作空间的终端执行：
 
 ```bash
-rosrun --prefix "/home/shansu/miniconda3/envs/detection/bin/python" \
+# 检测环境解释器，例如 ~/miniconda3/envs/detection/bin/python
+rosrun --prefix "$DETECTION_PYTHON" \
   mvs yolo_detector.py --save-yolo-video
 ```
 
@@ -88,6 +91,37 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
 ```
 
 旧版按需启动相机和 YOLO，保存 raw、YOLO、aimed 三个视频。配置 `video.adopt_existing_detector: true` 时，也可接入手动启动的 `yolo_detector.py --save-video` 录像会话。
+
+## 在新机器上配置路径
+
+示例中的 `~/test_ws`、`~/catkin_ws`、`~/moma_ws` 分别对应机械臂工作空间（`dobot_v4_bringup`）、相机工作空间（`mvs`）和本功能包所在工作空间。换到新机器时改成实际目录。
+
+旧版录像会从相机工作空间启动 `camera_stream` 和 `yolo_detector.py`。默认的混合录像器不会拉起这两个进程。每条旧版路径按以下顺序解析：
+
+1. 非空的 launch 参数。
+2. `config/default.yaml` 中的非空值（展开 `~` 和环境变量）。
+3. 环境变量。
+4. 自动发现。
+
+| 路径 | Launch 参数 | YAML | 环境变量 | 自动发现 |
+| --- | --- | --- | --- | --- |
+| 相机工作空间 | `camera_workspace` | `video.camera_workspace` | `TELEOP_CAMERA_WORKSPACE` | `rospack find mvs` 所在 catkin 工作空间；否则在存在 `devel/setup.bash` 时使用 `~/catkin_ws` |
+| 检测 Python | `python_executable` | `video.python_executable` | `TELEOP_DETECTION_PYTHON` | 当前名为 `detection` 的 conda 环境；否则查找 `~/miniconda3`、`~/anaconda3`、`~/miniforge3`、`~/mambaforge` 或 `~/micromamba` 下的 `detection` 环境 |
+
+```bash
+roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
+  start_hybrid_video_manager:=false \
+  start_legacy_video_manager:=true \
+  camera_workspace:=~/catkin_ws \
+  python_executable:=~/miniconda3/envs/detection/bin/python
+```
+
+也可以在启动前导出同样的值。YAML 中这两项留空，仓库里就不会写入某台机器的绝对路径。
+
+```bash
+export TELEOP_CAMERA_WORKSPACE="$HOME/catkin_ws"
+export TELEOP_DETECTION_PYTHON="$HOME/miniconda3/envs/detection/bin/python"
+```
 
 ## 配置与排查
 
@@ -105,3 +139,7 @@ rostopic hz /camera/image_raw
 ```
 
 录像没有画面时，先检查相机话题是否持续出帧；机械臂控制失败时，检查 TCP 模式及网络连接。终端日志使用中文。
+
+## 许可证
+
+Apache License 2.0。详见 [LICENSE](LICENSE)。

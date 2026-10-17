@@ -7,8 +7,9 @@
     Dobot arm enable/disable/error-clear commands, and light-control placeholders.
   </description>
 
-  <maintainer email="todo@example.com">todo</maintainer>
-  <license>TODO</license>
+  <maintainer email="jixuyang0715@gmail.com">Jiuxu Yang</maintainer>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/Zeuss-0/teleop_joy_ctrl</url>
 
   <buildtool_depend>catkin</buildtool_depend>
 

@@ -24,6 +24,13 @@ from std_srvs.srv import Trigger, TriggerResponse
 # if module_parent not in sys.path:
 #     sys.path.insert(0, module_parent)
 
+from teleop_joy_ctrl.runtime_paths import (
+    CAMERA_WORKSPACE_HELP,
+    DETECTION_PYTHON_HELP,
+    resolve_camera_workspace,
+    resolve_python_executable,
+    ros_setup_bash,
+)
 from teleop_joy_ctrl.video_process_manager import (
     ERROR,
     IDLE,
@@ -36,12 +43,19 @@ from teleop_joy_ctrl.video_process_manager import (
 class VideoRecordingManagerNode(object):
     def __init__(self):
         self.video = rospy.get_param("~video", {})
-        self.camera_workspace = self.video.get(
-            "camera_workspace", "/home/shansu/catkin_ws"
+        # Launch args win when set. Empty leaves YAML, env, and discovery in place.
+        self.camera_workspace = resolve_camera_workspace(
+            _first_nonempty(
+                rospy.get_param("~camera_workspace", ""),
+                self.video.get("camera_workspace", ""),
+            ),
+            mvs_package_path=self.lookup_mvs_package_path(),
         )
-        self.python_executable = self.video.get(
-            "python_executable",
-            "/home/shansu/miniconda3/envs/detection/bin/python",
+        self.python_executable = resolve_python_executable(
+            _first_nonempty(
+                rospy.get_param("~python_executable", ""),
+                self.video.get("python_executable", ""),
+            )
         )
         self.image_topic = self.video.get(
             "image_topic", "/camera/image_raw"
@@ -219,6 +233,19 @@ class VideoRecordingManagerNode(object):
             rospy.Duration(1.0), self.monitor_processes
         )
         rospy.on_shutdown(self.shutdown)
+        if self.camera_workspace and self.python_executable:
+            rospy.loginfo(
+                "录像进程管理节点: 相机工作空间=%s，检测Python=%s",
+                self.camera_workspace,
+                self.python_executable,
+            )
+        else:
+            rospy.logwarn(
+                "录像进程管理节点: 相机工作空间=%s，检测Python=%s。"
+                "自动拉起相机或 YOLO 前需要两者均有效",
+                self.camera_workspace or "(未解析)",
+                self.python_executable or "(未解析)",
+            )
         self.publish_core_state()
         self.publish_status(
             True, "录像进程管理节点已启动，当前处于空闲状态"
@@ -536,7 +563,20 @@ class VideoRecordingManagerNode(object):
                 return set(nodes)
         return set()
 
+    @staticmethod
+    def lookup_mvs_package_path():
+        try:
+            import rospkg
+        except Exception:
+            return ""
+        try:
+            return rospkg.RosPack().get_path("mvs")
+        except Exception:
+            return ""
+
     def launch_owned_process(self, name):
+        if not self.camera_workspace:
+            raise RuntimeError(CAMERA_WORKSPACE_HELP)
         setup_file = os.path.join(
             self.camera_workspace, "devel", "setup.bash"
         )
@@ -548,14 +588,17 @@ class VideoRecordingManagerNode(object):
             raise RuntimeError(
                 "相机工作空间环境文件不存在：%s" % setup_file
             )
+        ros_setup = ros_setup_bash()
 
         if name == "camera":
             command = (
-                "source /opt/ros/noetic/setup.bash && "
+                "source %s && "
                 "source %s && "
                 "exec rosrun mvs camera_stream"
-            ) % shlex.quote(setup_file)
+            ) % (shlex.quote(ros_setup), shlex.quote(setup_file))
         elif name == "detector":
+            if not self.python_executable:
+                raise RuntimeError(DETECTION_PYTHON_HELP)
             if not os.path.isfile(self.python_executable):
                 raise RuntimeError(
                     "检测环境Python不存在：%s" % self.python_executable
@@ -585,11 +628,12 @@ class VideoRecordingManagerNode(object):
             if self.detector_headless:
                 detector_args += " --headless"
             command = (
-                "source /opt/ros/noetic/setup.bash && "
+                "source %s && "
                 "source %s && "
                 "export PYTHONPATH=%s:${PYTHONPATH} && "
                 "exec %s %s %s"
             ) % (
+                shlex.quote(ros_setup),
                 shlex.quote(setup_file),
                 shlex.quote(mvs_python_source),
                 shlex.quote(self.python_executable),
@@ -959,6 +1003,15 @@ class VideoRecordingManagerNode(object):
             self.publish_status(success, message)
         finally:
             self.operation_lock.release()
+
+
+def _first_nonempty(*values):
+    for value in values:
+        if value is None:
+            continue
+        if str(value).strip():
+            return value
+    return ""
 
 
 def main():
