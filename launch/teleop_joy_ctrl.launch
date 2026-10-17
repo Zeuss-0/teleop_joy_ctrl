@@ -11,6 +11,9 @@
   <arg name="start_video_manager" default="true" />
   <arg name="start_hybrid_video_manager" default="true" />
   <arg name="start_legacy_video_manager" default="false" />
+  <!-- Legacy recording only. Empty keeps YAML, env, and discovery resolution. -->
+  <arg name="camera_workspace" default="" />
+  <arg name="python_executable" default="" />
   
   <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
   <arg name="start_takeover_mux" default="true" />
@@ -67,6 +70,8 @@
             name="video_recording_manager_node"
             output="screen">
         <rosparam command="load" file="$(arg config)" />
+        <param name="camera_workspace" value="$(arg camera_workspace)" />
+        <param name="python_executable" value="$(arg python_executable)" />
       </node>
     </group>
   </group>

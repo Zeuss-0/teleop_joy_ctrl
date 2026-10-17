@@ -103,8 +103,16 @@ video:
   enabled: true
   double_click_interval: 0.4
   long_press_duration: 1.5
-  camera_workspace: /home/shansu/catkin_ws
-  python_executable: /home/shansu/miniconda3/envs/detection/bin/python
+  # 含 mvs 的 catkin 工作空间。留空时按以下顺序解析：
+  # launch 参数 camera_workspace、环境变量 TELEOP_CAMERA_WORKSPACE、
+  # rospack find mvs 所在工作空间、已编译的 ~/catkin_ws。
+  # 示例：camera_workspace: ~/catkin_ws
+  camera_workspace: ""
+  # 启动 yolo_detector.py 的解释器。留空时按以下顺序解析：
+  # launch 参数 python_executable、环境变量 TELEOP_DETECTION_PYTHON、
+  # 名为 detection 的 conda 环境（含 ~/miniconda3、~/anaconda3、~/miniforge3）。
+  # 示例：python_executable: ~/miniconda3/envs/detection/bin/python
+  python_executable: ""
   image_topic: /camera/image_raw
   camera_node_name: /camera_stream_node
   detector_node_name: /yolo_detector_node

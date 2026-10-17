@@ -43,6 +43,8 @@ source ~/moma_ws/devel/setup.bash
 roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch
 ```
 
+上述 `~/test_ws`、`~/catkin_ws`、`~/moma_ws` 是示例工作空间。换机器时改成现场实际路径。旧版录像自动拉起相机和 YOLO 时，相机工作空间与检测 Python 的覆盖方式见第 16 节。
+
 默认 launch 会同时启动：
 
 - 接管用 `twist_mux`；
@@ -436,10 +438,9 @@ R3 已实测对应 `/joy_teleop/joy` 的 `buttons[10]`。录像控制在 X
 
 空闲状态下双击 R3，两次短按的间隔不得超过 `0.4 s`。录像管理节点会：
 
-1. 从 `/home/shansu/catkin_ws` 启动 `mvs camera_stream`。
+1. 从相机工作空间启动 `mvs camera_stream`。工作空间按 launch 参数 `camera_workspace`、`video.camera_workspace`、环境变量 `TELEOP_CAMERA_WORKSPACE`、`rospack find mvs` 所在工作空间、已编译的 `~/catkin_ws` 的顺序解析。
 2. 等待 `/camera/image_raw` 就绪。
-3. 使用 `/home/shansu/miniconda3/envs/detection/bin/python` 启动
-   `mvs yolo_detector.py --save-video`。默认保留 NoMachine 图形预览；无图形终端时将
+3. 使用检测环境 Python 启动 `mvs yolo_detector.py --save-video`。解释器按 launch 参数 `python_executable`、`video.python_executable`、环境变量 `TELEOP_DETECTION_PYTHON`，以及名为 `detection` 的 conda 环境解析。默认保留 NoMachine 图形预览；无图形终端时将
    `default.yaml` 中的 `video.detector_headless` 改为 `true`。
 4. 等待 YOLO 录像服务就绪，然后进入 `RECORDING` 状态。
 
@@ -485,7 +486,8 @@ rosrun mvs camera_stream
 
 # 终端 2
 source ~/catkin_ws/devel/setup.bash
-rosrun --prefix "/home/shansu/miniconda3/envs/detection/bin/python" mvs yolo_detector.py --save-video
+# DETECTION_PYTHON 为检测环境解释器，例如 ~/miniconda3/envs/detection/bin/python
+rosrun --prefix "$DETECTION_PYTHON" mvs yolo_detector.py --save-video
 ```
 
 ### 15.4 文件命名与检查
@@ -493,7 +495,7 @@ rosrun --prefix "/home/shansu/miniconda3/envs/detection/bin/python" mvs yolo_det
 每次录像只生成一个时间戳。目录和原始视频同名：
 
 ```text
-/home/shansu/catkin_ws/src/mvs/scripts/recordings/20260723_153012/
+<相机工作空间>/src/mvs/scripts/recordings/20260723_153012/
 ├── 20260723_153012.mp4
 ├── yolo.mp4
 └── aimed_20260723_153012.mp4
@@ -512,8 +514,8 @@ rostopic echo /teleop_joy_ctrl/video/status
 rostopic echo /teleop_joy_ctrl/video/output_dir
 ```
 
-部署时将 `teleop_joy_ctrl` 放入 `/home/shansu/moma_ws/src`，将修改后的
-MVS 文件放入 `/home/shansu/catkin_ws/src/mvs`。不要在 `moma_ws` 中放置
+部署时将 `teleop_joy_ctrl` 放入移动操作工作空间的 `src`（例如 `~/moma_ws/src`），将修改后的
+MVS 文件放入相机工作空间的 `src/mvs`（例如 `~/catkin_ws/src/mvs`）。不要在移动操作工作空间中放置
 第二份 `mvs` 包。
 
 ## 17. 当前版本限制

@@ -40,7 +40,7 @@ def load_controller_module():
         "std_msgs.msg": std_msgs_msg,
     })
 
-    source = Path(__file__).with_name("teleop_joy_ctrl_node.py")
+    source = Path(__file__).resolve().parents[1] / "teleop_joy_ctrl_node.py"
     spec = importlib.util.spec_from_file_location(
         "teleop_video_button_under_test", source
     )

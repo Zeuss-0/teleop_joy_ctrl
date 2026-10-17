@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+.installed.cfg
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# ROS / catkin
+devel/
+logs/
+build/
+install/
+.catkin_workspace
+msg_gen/
+srv_gen/
+*.bag
+*.bag.active
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

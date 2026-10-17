@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from moma_ws.src.teleop_joy_ctrl.src.teleop_joy_ctrl.video_process_manager import (
+from teleop_joy_ctrl.video_process_manager import (
     ERROR,
     IDLE,
     PAUSED,
@@ -151,8 +151,8 @@ class VideoProcessManagerTest(unittest.TestCase):
         self.assertEqual("/tmp/recordings/20260723_153012", output_dir)
         self.assertEqual(IDLE, subject.state)
         self.assertEqual(
-            ["detector:stop", "stop:detector", "stop:camera"],
-            self.operations[-3:],
+            ["detector:stop", "detector:shutdown", "stop:detector", "stop:camera"],
+            self.operations[-4:],
         )
         self.assertIsNone(subject.camera_process)
         self.assertIsNone(subject.detector_process)
@@ -168,8 +168,8 @@ class VideoProcessManagerTest(unittest.TestCase):
         self.assertEqual("视频封装失败", message)
         self.assertEqual(ERROR, subject.state)
         self.assertEqual(
-            ["detector:stop", "stop:detector", "stop:camera"],
-            self.operations[-3:],
+            ["detector:stop", "detector:shutdown", "stop:detector", "stop:camera"],
+            self.operations[-4:],
         )
 
     def test_stop_service_timeout_still_closes_owned_processes(self):
@@ -183,8 +183,8 @@ class VideoProcessManagerTest(unittest.TestCase):
         self.assertIn("超时", message)
         self.assertEqual(ERROR, subject.state)
         self.assertEqual(
-            ["detector:stop", "stop:detector", "stop:camera"],
-            self.operations[-3:],
+            ["detector:stop", "detector:shutdown", "stop:detector", "stop:camera"],
+            self.operations[-4:],
         )
 
     def test_process_stop_exception_keeps_ownership_and_sets_error(self):
@@ -216,8 +216,8 @@ class VideoProcessManagerTest(unittest.TestCase):
 
         self.assertEqual(IDLE, subject.state)
         self.assertEqual(
-            ["detector:stop", "stop:detector", "stop:camera"],
-            self.operations[-3:],
+            ["detector:stop", "detector:shutdown", "stop:detector", "stop:camera"],
+            self.operations[-4:],
         )
 
     def test_shutdown_during_partial_start_only_stops_owned_processes(self):
