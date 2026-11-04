@@ -3,12 +3,14 @@
 
 """手柄意图执行。
 
-限速、Twist、相机、光源、机械臂和录像都在这里完成。JoyParser 的结果通过
-apply() 以内存对象传入，publish_chassis() 按肩键接管状态发布速度。
+限速、Twist、相机、光源、机械臂和录像都在这里完成。同进程路径用 apply()
+一次送入解析结果；两个节点时，执行器节点用 apply_chassis() 和 apply_events()
+分别接收归一化底盘意图和有序离散事件。publish_chassis() 按肩键接管状态发布速度。
 
-机械臂的 wait_for_service 与同步调用仍在本模块，但集中在 ArmServiceGateway，
-底盘发布循环不调用它。Step A 仍在手柄回调线程里同步执行 START，后续可以把
-gateway.connect / handle_arm_start 挪走，而不改速度发布。
+机械臂的 wait_for_service 与同步调用集中在 ArmServiceGateway，底盘发布循环
+不进入这个类。执行器节点调用 start_arm_worker() 后，连接和 START 状态机在
+后台线程运行。未启动该线程时（同进程旧节点和单元测试），START 仍在调用线程
+里同步执行。
 """
 
 import queue
@@ -167,13 +169,29 @@ class ArmServiceGateway(object):
             'robot_mode': srv_prefix + '/RobotMode',
         }
 
-    def connect(self, service_types):
-        """阻塞直到机械臂服务可用，然后建立代理。调用方不要放在速度循环里。"""
+    def connect(self, service_types, wait_slice=None, should_stop=None):
+        """阻塞直到机械臂服务可用，然后建立代理。调用方不要放在速度循环里。
+
+        ``wait_slice`` 为秒时，按片等待并在 ``should_stop`` 为真时返回 False，
+        方便后台线程在关机时退出。默认仍一次等到服务出现。
+        """
         import rospy
 
         _srv_prefix, names = self.service_names()
         for name in names.values():
-            rospy.wait_for_service(name)
+            if wait_slice is None:
+                rospy.wait_for_service(name)
+                continue
+            while True:
+                if should_stop is not None and should_stop():
+                    return False
+                try:
+                    rospy.wait_for_service(name, timeout=float(wait_slice))
+                    break
+                except rospy.ROSInterruptException:
+                    return False
+                except rospy.ROSException:
+                    continue
 
         self.enable_client = rospy.ServiceProxy(names['enable'], service_types['enable'])
         self.disable_client = rospy.ServiceProxy(names['disable'], service_types['disable'])
@@ -279,6 +297,11 @@ class TeleopExecutor(object):
         self.video_command_timeout = float(
             self.video.get('manager_command_timeout', 35.0))
 
+        self._arm_async = False
+        self._arm_queue = None
+        self._arm_worker_stop = None
+        self._arm_worker = None
+
     def bind_ros_interfaces(self):
         import rospy
         from geometry_msgs.msg import Twist
@@ -327,9 +350,17 @@ class TeleopExecutor(object):
             queue_size=1)
 
     def apply(self, result, now):
-        self._chassis_intent = result.chassis
+        self.apply_chassis(result.chassis, now)
+        self.apply_events(result.events)
+
+    def apply_chassis(self, intent, now):
+        """记录一帧归一化底盘意图。不在这里乘速度上限。"""
+        self._chassis_intent = intent
         self._last_joy_time = float(now)
-        for event in result.events:
+
+    def apply_events(self, events):
+        """按给定顺序处理离散事件。同一条消息里的顺序就是同一帧的顺序。"""
+        for event in events or []:
             self._dispatch(event)
 
     def publish_chassis(self, now):
@@ -442,6 +473,9 @@ class TeleopExecutor(object):
             int(event.get('index', -1)),
             self.cn_bool(self.locked),
             self.cn_bool(self.arm_clients_ready)))
+        if self._arm_async:
+            self._arm_queue.put(True)
+            return
         self.handle_arm_start()
 
     def _handle_adjust(self, event):
@@ -746,7 +780,7 @@ class TeleopExecutor(object):
     def stop_video_worker(self):
         self.video_worker_stop.set()
 
-    def init_arm_clients(self):
+    def init_arm_clients(self, wait_slice=None, should_stop=None):
         if not self.arm_config_enabled:
             self._loginfo('手柄总控节点: 机械臂控制已通过参数关闭')
             return False
@@ -763,15 +797,72 @@ class TeleopExecutor(object):
 
         srv_prefix, _names = self.arm_gateway.service_names()
         self._loginfo('手柄总控节点: 等待 dobot_v4_bringup 机械臂服务...')
-        self.arm_gateway.connect({
-            'enable': EnableRobot,
-            'disable': DisableRobot,
-            'clear_error': ClearError,
-            'robot_mode': RobotMode,
-        })
+        connected = self.arm_gateway.connect(
+            {
+                'enable': EnableRobot,
+                'disable': DisableRobot,
+                'clear_error': ClearError,
+                'robot_mode': RobotMode,
+            },
+            wait_slice=wait_slice,
+            should_stop=should_stop,
+        )
+        if not connected:
+            self.arm_clients_ready = False
+            self.arm_gateway.ready = False
+            self._loginfo('手柄总控节点: 机械臂服务连接已中止')
+            return False
         self.arm_clients_ready = True
         self._loginfo('手柄总控节点: 机械臂服务已就绪，服务前缀=%s' % srv_prefix)
         return True
+
+    def start_arm_worker(self):
+        """把机械臂连接和 START 状态机挪出底盘/事件回调线程。"""
+        if self._arm_async:
+            return
+        self._arm_queue = queue.Queue()
+        self._arm_worker_stop = threading.Event()
+        self._arm_async = True
+        self._arm_worker = threading.Thread(
+            target=self._arm_worker_loop,
+            name='teleop_arm_worker')
+        self._arm_worker.daemon = True
+        self._arm_worker.start()
+
+    def stop_arm_worker(self):
+        if self._arm_worker_stop is not None:
+            self._arm_worker_stop.set()
+        worker = self._arm_worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=1.5)
+        if worker is not None and worker.is_alive():
+            return
+        self._arm_async = False
+        self._arm_worker = None
+
+    def _arm_worker_loop(self):
+        if self.arm_config_enabled:
+            try:
+                self.init_arm_clients(
+                    wait_slice=0.5,
+                    should_stop=self._arm_worker_stop.is_set)
+            except Exception as exc:
+                if exc.__class__.__name__ == 'ROSInterruptException':
+                    return
+                self._logerr('手柄总控节点: 机械臂后台连接失败: %s' % exc)
+        while not self._arm_worker_stop.is_set():
+            try:
+                self._arm_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.handle_arm_start()
+            except Exception as exc:
+                if exc.__class__.__name__ == 'ROSInterruptException':
+                    return
+                self._logerr('手柄总控节点: START机械臂处理异常: %s' % exc)
+            finally:
+                self._arm_queue.task_done()
 
     def ensure_arm_ready(self, action_name):
         if not self.arm_config_enabled:

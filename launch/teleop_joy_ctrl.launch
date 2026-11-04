@@ -14,6 +14,8 @@
   <!-- Legacy recording only. Empty keeps YAML, env, and discovery resolution. -->
   <arg name="camera_workspace" default="" />
   <arg name="python_executable" default="" />
+  <!-- Two-node intent/executor is the default. Set true to roll back to the in-process node. -->
+  <arg name="legacy_single_node" default="false" />
   
   <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
   <arg name="start_takeover_mux" default="true" />
@@ -45,7 +47,27 @@
     <arg name="robotName" value="$(arg robot_namespace)" />
   </include>
 
-  <node pkg="teleop_joy_ctrl"
+  <group unless="$(arg legacy_single_node)">
+    <node pkg="teleop_joy_ctrl"
+          type="joy_intent_node.py"
+          name="joy_intent_node"
+          output="screen">
+      <rosparam command="load" file="$(arg config)" />
+      <param name="joy_topic" value="$(arg joy_topic)" />
+    </node>
+
+    <node pkg="teleop_joy_ctrl"
+          type="teleop_executor_node.py"
+          name="teleop_executor_node"
+          output="screen">
+      <rosparam command="load" file="$(arg config)" />
+      <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+      <param name="arm/robot_namespace" value="$(arg robot_namespace)" />
+    </node>
+  </group>
+
+  <node if="$(arg legacy_single_node)"
+        pkg="teleop_joy_ctrl"
         type="teleop_joy_ctrl_node.py"
         name="teleop_joy_ctrl_node"
         output="screen">
