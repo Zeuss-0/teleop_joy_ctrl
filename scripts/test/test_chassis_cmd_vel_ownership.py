@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import importlib.util
 import sys
-import types
 import unittest
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
+from teleop_joy_ctrl.joy_parser import ChassisIntent, SPEED_GEAR_HIGH, SPEED_GEAR_NONE
+from teleop_joy_ctrl.teleop_executor import TeleopExecutor
 
 
 class Vector3(object):
@@ -21,11 +26,6 @@ class Twist(object):
         self.angular = Vector3()
 
 
-class Message(object):
-    def __init__(self, data=None):
-        self.data = data
-
-
 class RecordingPublisher(object):
     def __init__(self):
         self.messages = []
@@ -34,95 +34,87 @@ class RecordingPublisher(object):
         self.messages.append(message)
 
 
-def load_controller_module():
-    rospy = types.ModuleType('rospy')
-    geometry_msgs = types.ModuleType('geometry_msgs')
-    geometry_msgs_msg = types.ModuleType('geometry_msgs.msg')
-    geometry_msgs_msg.Twist = Twist
-    sensor_msgs = types.ModuleType('sensor_msgs')
-    sensor_msgs_msg = types.ModuleType('sensor_msgs.msg')
-    sensor_msgs_msg.Joy = Message
-    std_msgs = types.ModuleType('std_msgs')
-    std_msgs_msg = types.ModuleType('std_msgs.msg')
-    std_msgs_msg.Bool = Message
-    std_msgs_msg.Float32 = Message
-    std_msgs_msg.String = Message
-
-    sys.modules.update({
-        'rospy': rospy,
-        'geometry_msgs': geometry_msgs,
-        'geometry_msgs.msg': geometry_msgs_msg,
-        'sensor_msgs': sensor_msgs,
-        'sensor_msgs.msg': sensor_msgs_msg,
-        'std_msgs': std_msgs,
-        'std_msgs.msg': std_msgs_msg,
-    })
-
-    source = Path(__file__).resolve().parents[1] / 'teleop_joy_ctrl_node.py'
-    spec = importlib.util.spec_from_file_location('teleop_joy_ctrl_node_under_test', source)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-MODULE = load_controller_module()
-
-
-def make_controller(control_requested, was_active=False, timed_out=False):
-    controller = MODULE.TeleopJoyCtrl.__new__(MODULE.TeleopJoyCtrl)
-    controller.last_joy = object()
-    controller.chassis_command_active = was_active
-    controller.cmd_vel_pub = RecordingPublisher()
-    controller.joy_timed_out = lambda: timed_out
-    controller.chassis_control_requested = lambda _msg: control_requested
-    command = Twist()
-    command.linear.x = 0.4
-    controller.make_chassis_twist = lambda _msg: command
-    controller.maybe_log_chassis_success = lambda _twist: None
-    controller.log_success = lambda _text: None
-    return controller
+def make_executor(was_active=False):
+    executor = TeleopExecutor(
+        chassis={
+            "holonomic": False,
+            "high_speed_scale": 1.0,
+            "low_speed_scale": 0.35,
+            "max_linear_speed": 0.4,
+            "max_angular_speed": 0.8,
+        },
+        camera={},
+        light={"enabled": False},
+        arm={"enabled": False},
+        video={"enabled": False},
+        joy_timeout=0.5,
+        debug_success_logs=False,
+        publishers={"cmd_vel": RecordingPublisher()},
+        twist_cls=Twist,
+        logger=type("Silent", (), {
+            "info": staticmethod(lambda _text: None),
+            "warn": staticmethod(lambda _text: None),
+            "error": staticmethod(lambda _text: None),
+        })(),
+    )
+    executor.chassis_command_active = was_active
+    executor._last_joy_time = 10.0
+    return executor
 
 
 class ChassisCmdVelOwnershipTest(unittest.TestCase):
     def test_idle_joystick_does_not_publish_zero_velocity(self):
-        controller = make_controller(control_requested=False)
+        executor = make_executor()
+        executor._chassis_intent = ChassisIntent(False, SPEED_GEAR_NONE, 0.0, 1.0)
 
-        controller.publish_loop(None)
+        executor.publish_chassis(10.0)
 
-        self.assertEqual([], controller.cmd_vel_pub.messages)
-        self.assertFalse(controller.chassis_command_active)
+        self.assertEqual([], executor.cmd_vel_pub.messages)
+        self.assertFalse(executor.chassis_command_active)
 
     def test_shoulder_button_claims_control_and_publishes_velocity(self):
-        controller = make_controller(control_requested=True)
+        executor = make_executor()
+        executor._chassis_intent = ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 1.0)
 
-        controller.publish_loop(None)
+        executor.publish_chassis(10.0)
 
-        self.assertEqual(1, len(controller.cmd_vel_pub.messages))
-        self.assertEqual(0.4, controller.cmd_vel_pub.messages[0].linear.x)
-        self.assertTrue(controller.chassis_command_active)
+        self.assertEqual(1, len(executor.cmd_vel_pub.messages))
+        self.assertEqual(0.4, executor.cmd_vel_pub.messages[0].linear.x)
+        self.assertTrue(executor.chassis_command_active)
 
     def test_release_publishes_one_stop_then_becomes_silent(self):
-        controller = make_controller(control_requested=False, was_active=True)
+        executor = make_executor(was_active=True)
+        executor._chassis_intent = ChassisIntent(False, SPEED_GEAR_NONE, 0.0, 1.0)
 
-        controller.publish_loop(None)
-        controller.publish_loop(None)
+        executor.publish_chassis(10.0)
+        executor.publish_chassis(10.0)
 
-        self.assertEqual(1, len(controller.cmd_vel_pub.messages))
-        self.assertEqual(0.0, controller.cmd_vel_pub.messages[0].linear.x)
-        self.assertFalse(controller.chassis_command_active)
+        self.assertEqual(1, len(executor.cmd_vel_pub.messages))
+        self.assertEqual(0.0, executor.cmd_vel_pub.messages[0].linear.x)
+        self.assertFalse(executor.chassis_command_active)
 
     def test_joystick_timeout_releases_active_control(self):
-        controller = make_controller(
-            control_requested=True,
-            was_active=True,
-            timed_out=True)
+        executor = make_executor(was_active=True)
+        executor._chassis_intent = ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 1.0)
 
-        controller.publish_loop(None)
+        executor.publish_chassis(10.6)
 
-        self.assertEqual(1, len(controller.cmd_vel_pub.messages))
-        self.assertEqual(0.0, controller.cmd_vel_pub.messages[0].linear.x)
-        self.assertFalse(controller.chassis_command_active)
+        self.assertEqual(1, len(executor.cmd_vel_pub.messages))
+        self.assertEqual(0.0, executor.cmd_vel_pub.messages[0].linear.x)
+        self.assertFalse(executor.chassis_command_active)
+
+    def test_centered_stick_while_active_keeps_publishing_zeros(self):
+        executor = make_executor()
+        executor._chassis_intent = ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 0.0)
+
+        executor.publish_chassis(10.0)
+        executor.publish_chassis(10.1)
+
+        self.assertEqual(2, len(executor.cmd_vel_pub.messages))
+        self.assertEqual(0.0, executor.cmd_vel_pub.messages[0].linear.x)
+        self.assertEqual(0.0, executor.cmd_vel_pub.messages[1].linear.x)
+        self.assertTrue(executor.chassis_command_active)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -1,61 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import importlib.util
 import sys
 import threading
-import types
 import unittest
 from pathlib import Path
 
 
-class Message(object):
-    def __init__(self, data=None):
-        self.data = data
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
+from teleop_joy_ctrl.teleop_executor import (
+    R3GestureInterpreter,
+    VIDEO_COMMAND_PAUSE,
+    VIDEO_COMMAND_RESUME,
+    VIDEO_COMMAND_START,
+    VIDEO_COMMAND_STOP,
+    VIDEO_ERROR,
+    VIDEO_IDLE,
+    VIDEO_PAUSED,
+    VIDEO_RECORDING,
+    VIDEO_STARTING,
+    VIDEO_STOPPING,
+)
 
 
-def load_controller_module():
-    rospy = types.ModuleType("rospy")
-    rospy.logwarn = lambda *_args, **_kwargs: None
-    geometry_msgs = types.ModuleType("geometry_msgs")
-    geometry_msgs_msg = types.ModuleType("geometry_msgs.msg")
-    sensor_msgs = types.ModuleType("sensor_msgs")
-    sensor_msgs_msg = types.ModuleType("sensor_msgs.msg")
-    std_msgs = types.ModuleType("std_msgs")
-    std_msgs_msg = types.ModuleType("std_msgs.msg")
-
-    geometry_msgs_msg.Twist = object
-    sensor_msgs_msg.Joy = Message
-    std_msgs_msg.Bool = Message
-    std_msgs_msg.Float32 = Message
-    std_msgs_msg.String = Message
-
-    sys.modules.update({
-        "rospy": rospy,
-        "geometry_msgs": geometry_msgs,
-        "geometry_msgs.msg": geometry_msgs_msg,
-        "sensor_msgs": sensor_msgs,
-        "sensor_msgs.msg": sensor_msgs_msg,
-        "std_msgs": std_msgs,
-        "std_msgs.msg": std_msgs_msg,
-    })
-
-    source = Path(__file__).resolve().parents[1] / "teleop_joy_ctrl_node.py"
-    spec = importlib.util.spec_from_file_location(
-        "teleop_video_button_under_test", source
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+class _Module(object):
+    pass
 
 
-MODULE = load_controller_module()
-
-
-class JoyMessage(object):
-    def __init__(self, pressed=False):
-        self.buttons = [0] * 11
-        self.buttons[10] = 1 if pressed else 0
+MODULE = _Module()
+MODULE.R3GestureInterpreter = R3GestureInterpreter
+MODULE.VIDEO_COMMAND_PAUSE = VIDEO_COMMAND_PAUSE
+MODULE.VIDEO_COMMAND_RESUME = VIDEO_COMMAND_RESUME
+MODULE.VIDEO_COMMAND_START = VIDEO_COMMAND_START
+MODULE.VIDEO_COMMAND_STOP = VIDEO_COMMAND_STOP
+MODULE.VIDEO_ERROR = VIDEO_ERROR
+MODULE.VIDEO_IDLE = VIDEO_IDLE
+MODULE.VIDEO_PAUSED = VIDEO_PAUSED
+MODULE.VIDEO_RECORDING = VIDEO_RECORDING
+MODULE.VIDEO_STARTING = VIDEO_STARTING
+MODULE.VIDEO_STOPPING = VIDEO_STOPPING
 
 
 class FakeQueue(object):
@@ -64,6 +49,17 @@ class FakeQueue(object):
 
     def put_nowait(self, item):
         self.items.append(item)
+
+
+class SilentLogger(object):
+    def info(self, _text):
+        return None
+
+    def warn(self, _text):
+        return None
+
+    def error(self, _text):
+        return None
 
 
 class R3GestureInterpreterTest(unittest.TestCase):
@@ -146,47 +142,53 @@ class R3GestureInterpreterTest(unittest.TestCase):
 
 
 class VideoControllerIntegrationTest(unittest.TestCase):
-    def make_controller(self, state):
-        controller = MODULE.TeleopJoyCtrl.__new__(MODULE.TeleopJoyCtrl)
-        controller.buttons = {"right_stick": 10}
-        controller.video_enabled = True
-        controller.video_state = state
-        controller.video_input_state = state
-        controller.video_command_queue = FakeQueue()
-        controller.video_operation_lock = threading.Lock()
-        controller.video_operation_pending = False
-        controller.video_gesture = MODULE.R3GestureInterpreter(0.4, 1.5)
-        controller.video_gesture.reset(False, 0.0)
-        controller.log_success = lambda _text: None
-        return controller
+    def make_executor(self, state):
+        from teleop_joy_ctrl.teleop_executor import TeleopExecutor
+
+        executor = TeleopExecutor.__new__(TeleopExecutor)
+        executor.video_enabled = True
+        executor.video_state = state
+        executor.video_input_state = state
+        executor.video_command_queue = FakeQueue()
+        executor.video_operation_lock = threading.Lock()
+        executor.video_operation_pending = False
+        executor.video_gesture = MODULE.R3GestureInterpreter(0.4, 1.5)
+        executor.video_gesture.reset(False, 0.0)
+        executor.debug_success_logs = False
+        executor._logger = SilentLogger()
+        return executor
+
+    def feed(self, executor, pressed, when):
+        executor._handle_r3({
+            "phase": "hold" if pressed else "idle",
+            "pressed": pressed,
+            "time": when,
+        })
 
     def test_controller_queues_start_after_idle_double_click(self):
-        controller = self.make_controller(MODULE.VIDEO_IDLE)
-        controller.locked = True
-        controller.handle_video_button(JoyMessage(True), 0.10)
-        controller.handle_video_button(JoyMessage(False), 0.18)
-        controller.handle_video_button(JoyMessage(True), 0.30)
-        controller.handle_video_button(JoyMessage(False), 0.38)
+        executor = self.make_executor(MODULE.VIDEO_IDLE)
+        self.feed(executor, True, 0.10)
+        self.feed(executor, False, 0.18)
+        self.feed(executor, True, 0.30)
+        self.feed(executor, False, 0.38)
         self.assertEqual(
             [MODULE.VIDEO_COMMAND_START],
-            controller.video_command_queue.items,
+            executor.video_command_queue.items,
         )
 
     def test_pending_operation_ignores_followup_r3_command(self):
-        controller = self.make_controller(MODULE.VIDEO_RECORDING)
-        controller.handle_video_button(JoyMessage(True), 1.00)
-        controller.handle_video_button(JoyMessage(False), 1.10)
-        controller.handle_video_button(JoyMessage(True), 1.20)
-        controller.handle_video_button(JoyMessage(False), 1.30)
+        executor = self.make_executor(MODULE.VIDEO_RECORDING)
+        self.feed(executor, True, 1.00)
+        self.feed(executor, False, 1.10)
+        self.feed(executor, True, 1.20)
+        self.feed(executor, False, 1.30)
         self.assertEqual(
             [MODULE.VIDEO_COMMAND_PAUSE],
-            controller.video_command_queue.items,
+            executor.video_command_queue.items,
         )
-        self.assertEqual(MODULE.VIDEO_RECORDING, controller.video_state)
-        self.assertEqual(
-            MODULE.VIDEO_PAUSED, controller.video_input_state
-        )
-        self.assertTrue(controller.video_operation_pending)
+        self.assertEqual(MODULE.VIDEO_RECORDING, executor.video_state)
+        self.assertEqual(MODULE.VIDEO_PAUSED, executor.video_input_state)
+        self.assertTrue(executor.video_operation_pending)
 
 
 if __name__ == "__main__":
