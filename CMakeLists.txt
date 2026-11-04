@@ -26,7 +26,3 @@ catkin_install_python(PROGRAMS
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-
-install(DIRECTORY scripts/teleop_joy_ctrl/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts/teleop_joy_ctrl
-)
