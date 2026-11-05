@@ -16,8 +16,10 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/arm_bringup_guard_node.py
+  scripts/joy_intent_node.py
   scripts/light_serial_controller_node.py
   scripts/restore_system_teleop_on_shutdown.py
+  scripts/teleop_executor_node.py
   scripts/teleop_joy_ctrl_node.py
   scripts/video_recording_manager_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -25,8 +27,4 @@ catkin_install_python(PROGRAMS
 
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-)
-
-install(DIRECTORY scripts/teleop_joy_ctrl/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts/teleop_joy_ctrl
 )

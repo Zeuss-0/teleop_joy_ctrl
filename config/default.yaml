@@ -5,6 +5,8 @@ joy_topic: /joy_teleop/joy
 cmd_vel_topic: /teleop_joy_ctrl/cmd_vel
 state_topic: /teleop_joy_ctrl/state
 debug_topic: /teleop_joy_ctrl/debug
+chassis_axes_topic: /teleop_joy_ctrl/chassis_axes
+events_topic: /teleop_joy_ctrl/events
 
 publish_rate: 20.0
 joy_timeout: 0.5
