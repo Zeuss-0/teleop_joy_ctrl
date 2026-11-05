@@ -8,6 +8,8 @@
 
 from __future__ import print_function
 
+import uuid
+
 import rospy
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
@@ -43,6 +45,7 @@ class JoyIntentNode(object):
             left_trigger_pressed_threshold=left_trigger_pressed_threshold,
         )
         self._event_seq = 0
+        self._session = uuid.uuid4().hex
         self.chassis_pub = rospy.Publisher(
             self.chassis_axes_topic, String, queue_size=1, latch=False)
         self.events_pub = rospy.Publisher(
@@ -58,7 +61,8 @@ class JoyIntentNode(object):
         now = rospy.Time.now().to_sec()
         result = self.parser.update(msg.axes, msg.buttons, now)
         self.chassis_pub.publish(String(data=encode_chassis(result.chassis, now)))
-        event_payload = events_message(result.events, now, self._event_seq + 1)
+        event_payload = events_message(
+            result.events, now, self._event_seq + 1, session=self._session)
         if event_payload is None:
             return
         self._event_seq += 1

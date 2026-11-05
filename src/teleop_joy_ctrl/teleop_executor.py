@@ -4,15 +4,18 @@
 """手柄意图执行。
 
 限速、Twist、相机、光源、机械臂和录像都在这里完成。同进程路径用 apply()
-一次送入解析结果；两个节点时，执行器节点用 apply_chassis() 和 apply_events()
-分别接收归一化底盘意图和有序离散事件。publish_chassis() 按肩键接管状态发布速度。
+一次送入解析结果。两个节点时，执行器入口用 apply_chassis() 和
+apply_event_message()：轴夹到 [-1, 1]，报文时间只用来丢掉超前或过期的包，
+存活时间以本机接收时钟为准。离散事件还要带会话和递增序号，重复包和旧会话
+不会再次执行。锁定以执行器为准，锁定期间模式、HOME 和调参直接丢弃。
 
 机械臂的 wait_for_service 与同步调用集中在 ArmServiceGateway，底盘发布循环
-不进入这个类。执行器节点调用 start_arm_worker() 后，连接和 START 状态机在
-后台线程运行。未启动该线程时（同进程旧节点和单元测试），START 仍在调用线程
-里同步执行。
+不进入这个类。执行器节点调用 start_arm_worker() 后，连接和 START 在后台线程
+运行。服务未就绪或上一条 START 还没做完时直接拒绝，不把按键积压到恢复之后。
+未启动该线程时（同进程旧节点和单元测试），START 仍在调用线程里同步执行。
 """
 
+import math
 import queue
 import threading
 
@@ -27,6 +30,7 @@ from teleop_joy_ctrl.joy_parser import (
     EVENT_MODE,
     EVENT_R3,
     EVENT_START,
+    ChassisIntent,
     R3_SYNC,
     SPEED_GEAR_HIGH,
     SPEED_GEAR_LOW,
@@ -57,6 +61,11 @@ VIDEO_COMMAND_START = 'start'
 VIDEO_COMMAND_PAUSE = 'pause'
 VIDEO_COMMAND_RESUME = 'resume'
 VIDEO_COMMAND_STOP = 'stop'
+
+# 报文时间最多比本机接收时间超前这么多，避免把时钟抖动当成超前攻击。
+STAMP_FUTURE_SKEW = 0.05
+_LOCK_GATED_EVENTS = (EVENT_MODE, EVENT_HOME, EVENT_ADJUST)
+_RETIRED_EVENT_SESSIONS = 8
 
 
 class R3GestureInterpreter(object):
@@ -277,7 +286,12 @@ class TeleopExecutor(object):
 
         self.arm_gateway = ArmServiceGateway(self.arm)
         self.arm_config_enabled = self.arm_gateway.config_enabled
+        self._arm_gate = threading.Lock()
+        self._arm_job_pending = False
         self.arm_clients_ready = False
+        self._event_session = None
+        self._event_seq = 0
+        self._retired_event_sessions = []
 
         self.video_enabled = bool(self.video.get('enabled', True))
         self.video_state = VIDEO_IDLE
@@ -353,15 +367,129 @@ class TeleopExecutor(object):
         self.apply_chassis(result.chassis, now)
         self.apply_events(result.events)
 
-    def apply_chassis(self, intent, now):
-        """记录一帧归一化底盘意图。不在这里乘速度上限。"""
-        self._chassis_intent = intent
-        self._last_joy_time = float(now)
+    def apply_chassis(self, intent, now, stamp=None):
+        """记录一帧归一化底盘意图。
+
+        ``now`` 是本机接收时间，也是超时时钟。``stamp`` 是报文时间，只用来
+        丢掉超前或过期的包，不能把存活时间推到未来。轴在这里夹到 [-1, 1]。
+        拒绝时不刷新 ``_last_joy_time``。返回是否接受。
+        """
+        now = float(now)
+        if not self._chassis_stamp_ok(stamp, now):
+            return False
+        sanitized = self._sanitize_chassis(intent)
+        if sanitized is None:
+            self._logwarn('手柄总控节点: 底盘轴无效，已忽略')
+            return False
+        self._chassis_intent = sanitized
+        self._last_joy_time = now
+        return True
 
     def apply_events(self, events):
         """按给定顺序处理离散事件。同一条消息里的顺序就是同一帧的顺序。"""
         for event in events or []:
             self._dispatch(event)
+
+    def apply_event_message(self, message, now):
+        """话题入口。校验会话、序号和报文时间后再按原顺序执行。"""
+        if message is None or not self._accept_event_header(message, now):
+            return False
+        self.apply_events(message.events)
+        return True
+
+    def _chassis_stamp_ok(self, stamp, now):
+        if stamp is None:
+            return True
+        try:
+            stamp = float(stamp)
+        except (TypeError, ValueError):
+            self._logwarn('手柄总控节点: 底盘意图时间无效，已忽略')
+            return False
+        if not math.isfinite(stamp):
+            self._logwarn('手柄总控节点: 底盘意图时间无效，已忽略')
+            return False
+        if stamp > now + STAMP_FUTURE_SKEW:
+            self._logwarn('手柄总控节点: 底盘意图时间超前，已忽略')
+            return False
+        if (now - stamp) > self.joy_timeout:
+            self._logwarn('手柄总控节点: 底盘意图已过期，已忽略')
+            return False
+        return True
+
+    def _sanitize_chassis(self, intent):
+        if intent is None:
+            return None
+        left_x = self._finite_axis(intent.left_x)
+        left_y = self._finite_axis(intent.left_y)
+        if left_x is None or left_y is None:
+            return None
+        return ChassisIntent(
+            intent.active,
+            intent.speed_gear,
+            left_x,
+            left_y,
+        )
+
+    @staticmethod
+    def _finite_axis(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number):
+            return None
+        return clamp(number, -1.0, 1.0)
+
+    @staticmethod
+    def _bounded_axis(value):
+        number = TeleopExecutor._finite_axis(value)
+        if number is None:
+            return 0.0
+        return number
+
+    def _accept_event_header(self, message, now):
+        now = float(now)
+        session = message.session
+        seq = message.seq
+        stamp = message.stamp
+        if not isinstance(session, str) or not session or isinstance(seq, bool):
+            self._logwarn('手柄总控节点: 离散事件缺少会话或序号，已忽略')
+            return False
+        try:
+            seq = int(seq)
+            stamp = float(stamp)
+        except (TypeError, ValueError):
+            self._logwarn('手柄总控节点: 离散事件缺少会话或序号，已忽略')
+            return False
+        if seq < 1 or not math.isfinite(stamp):
+            self._logwarn('手柄总控节点: 离散事件序号或时间无效，已忽略')
+            return False
+        if stamp > now + STAMP_FUTURE_SKEW:
+            self._logwarn('手柄总控节点: 离散事件时间超前，已忽略')
+            return False
+        if (now - stamp) > self.joy_timeout:
+            self._logwarn('手柄总控节点: 离散事件已过期，已忽略')
+            return False
+        if session in self._retired_event_sessions:
+            self._logwarn('手柄总控节点: 离散事件属于已结束的会话，已忽略')
+            return False
+        if session != self._event_session:
+            if self._event_session:
+                self._retired_event_sessions.append(self._event_session)
+                if len(self._retired_event_sessions) > _RETIRED_EVENT_SESSIONS:
+                    del self._retired_event_sessions[0]
+            self._event_session = session
+            self._event_seq = seq
+            return True
+        if seq <= self._event_seq:
+            self._logwarn('手柄总控节点: 离散事件序号重复，已忽略')
+            return False
+        self._event_seq = seq
+        return True
+
+    def _refuse_start(self, reason):
+        self._logwarn('手柄总控节点: %s' % reason)
+        self.publish_state(reason)
 
     def publish_chassis(self, now):
         now = float(now)
@@ -391,11 +519,13 @@ class TeleopExecutor(object):
         else:
             return twist
 
-        twist.linear.x = intent.left_y * self.max_linear_speed * speed_scale
+        left_x = self._bounded_axis(intent.left_x)
+        left_y = self._bounded_axis(intent.left_y)
+        twist.linear.x = left_y * self.max_linear_speed * speed_scale
         if bool(self.chassis.get('holonomic', False)):
-            twist.linear.y = intent.left_x * self.max_linear_speed * speed_scale
+            twist.linear.y = left_x * self.max_linear_speed * speed_scale
         else:
-            twist.angular.z = intent.left_x * self.max_angular_speed * speed_scale
+            twist.angular.z = left_x * self.max_angular_speed * speed_scale
         return twist
 
     def _control_active(self):
@@ -440,6 +570,10 @@ class TeleopExecutor(object):
 
     def _dispatch(self, event):
         event_type = event.get('type')
+        if self.locked and event_type in _LOCK_GATED_EVENTS:
+            self._logwarn('手柄总控节点: 参数已锁定，已忽略事件=%s' % event_type)
+            self.publish_state('锁定中忽略事件=%s' % event_type)
+            return
         if event_type == EVENT_R3:
             self._handle_r3(event)
         elif event_type == EVENT_LOCK:
@@ -473,10 +607,23 @@ class TeleopExecutor(object):
             int(event.get('index', -1)),
             self.cn_bool(self.locked),
             self.cn_bool(self.arm_clients_ready)))
-        if self._arm_async:
-            self._arm_queue.put(True)
+        if not self._arm_async:
+            self.handle_arm_start()
             return
-        self.handle_arm_start()
+        with self._arm_gate:
+            if not self.arm_clients_ready:
+                self._refuse_start('机械臂服务未连接，已忽略本次START，恢复后请再按一次')
+                return
+            if self._arm_job_pending:
+                self._refuse_start('机械臂指令仍在执行，已忽略本次START')
+                return
+            self._arm_job_pending = True
+        try:
+            self._arm_queue.put_nowait(True)
+        except queue.Full:
+            with self._arm_gate:
+                self._arm_job_pending = False
+            self._refuse_start('机械臂指令仍在执行，已忽略本次START')
 
     def _handle_adjust(self, event):
         target = event.get('target')
@@ -788,8 +935,7 @@ class TeleopExecutor(object):
         try:
             from dobot_v4_bringup.srv import ClearError, DisableRobot, EnableRobot, RobotMode
         except ImportError as exc:
-            self.arm_clients_ready = False
-            self.arm_gateway.ready = False
+            self._set_arm_clients_ready(False)
             self._logerr(
                 '手柄总控节点: 无法导入 dobot_v4_bringup 服务定义，请确认已 source 机械臂工作空间，错误=%s'
                 % exc)
@@ -808,19 +954,24 @@ class TeleopExecutor(object):
             should_stop=should_stop,
         )
         if not connected:
-            self.arm_clients_ready = False
-            self.arm_gateway.ready = False
+            self._set_arm_clients_ready(False)
             self._loginfo('手柄总控节点: 机械臂服务连接已中止')
             return False
-        self.arm_clients_ready = True
+        self._set_arm_clients_ready(True)
         self._loginfo('手柄总控节点: 机械臂服务已就绪，服务前缀=%s' % srv_prefix)
         return True
+
+    def _set_arm_clients_ready(self, ready):
+        with self._arm_gate:
+            self.arm_clients_ready = bool(ready)
+            if not ready:
+                self.arm_gateway.ready = False
 
     def start_arm_worker(self):
         """把机械臂连接和 START 状态机挪出底盘/事件回调线程。"""
         if self._arm_async:
             return
-        self._arm_queue = queue.Queue()
+        self._arm_queue = queue.Queue(maxsize=1)
         self._arm_worker_stop = threading.Event()
         self._arm_async = True
         self._arm_worker = threading.Thread(
@@ -862,6 +1013,8 @@ class TeleopExecutor(object):
                     return
                 self._logerr('手柄总控节点: START机械臂处理异常: %s' % exc)
             finally:
+                with self._arm_gate:
+                    self._arm_job_pending = False
                 self._arm_queue.task_done()
 
     def ensure_arm_ready(self, action_name):
@@ -880,8 +1033,7 @@ class TeleopExecutor(object):
                 return False
 
         if not self.arm_gateway.clients_present():
-            self.arm_clients_ready = False
-            self.arm_gateway.ready = False
+            self._set_arm_clients_ready(False)
             self._logwarn(
                 '手柄总控节点: 机械臂服务客户端为空，%s 下次会重新连接' % action_name)
             return False

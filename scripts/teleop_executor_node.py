@@ -80,16 +80,18 @@ class TeleopExecutorNode(object):
             rospy.logwarn('手柄执行器节点: 无法解析底盘意图')
             return
         intent, stamp = decoded
-        if stamp is None:
-            stamp = rospy.Time.now().to_sec()
-        self.executor.apply_chassis(intent, stamp)
+        now = rospy.Time.now().to_sec()
+        if not self.executor.apply_chassis(intent, now, stamp=stamp):
+            rospy.logwarn('手柄执行器节点: 已忽略无效底盘意图')
 
     def events_callback(self, msg):
-        events = decode_events(msg.data)
-        if events is None:
+        message = decode_events(msg.data)
+        if message is None:
             rospy.logwarn('手柄执行器节点: 无法解析离散事件')
             return
-        self.executor.apply_events(events)
+        now = rospy.Time.now().to_sec()
+        if not self.executor.apply_event_message(message, now):
+            rospy.logwarn('手柄执行器节点: 已忽略无效离散事件')
 
     def publish_loop(self, _event):
         self.executor.publish_chassis(rospy.Time.now().to_sec())

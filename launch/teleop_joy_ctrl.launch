@@ -14,8 +14,8 @@
   <!-- Legacy recording only. Empty keeps YAML, env, and discovery resolution. -->
   <arg name="camera_workspace" default="" />
   <arg name="python_executable" default="" />
-  <!-- Two-node intent/executor is the default. Set true to roll back to the in-process node. -->
-  <arg name="legacy_single_node" default="false" />
+  <!-- Same-process node is the default. Set legacy_single_node:=false for the two-node path. -->
+  <arg name="legacy_single_node" default="true" />
   
   <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
   <arg name="start_takeover_mux" default="true" />

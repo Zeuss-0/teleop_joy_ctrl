@@ -305,8 +305,8 @@ class StepBIntentTopicTest(unittest.TestCase):
             [EVENT_MODE, EVENT_ADJUST, EVENT_ADJUST],
             [event["type"] for event in payload["events"]],
         )
-        self.assertEqual(payload["events"], decode_events(batch))
-        self.assertEqual([{"type": EVENT_HOME}], decode_events('{"type":"home"}'))
+        self.assertEqual(payload["events"], decode_events(batch).events)
+        self.assertEqual([{"type": EVENT_HOME}], decode_events('{"type":"home"}').events)
         self.assertEqual(
             [
                 {"type": EVENT_LOCK, "locked": True},
@@ -314,11 +314,11 @@ class StepBIntentTopicTest(unittest.TestCase):
             ],
             decode_events(
                 '[{"type":"lock","locked":true},{"type":"start","index":7}]'
-            ),
+            ).events,
         )
         self.assertIsNone(decode_events("not-json"))
         self.assertIsNone(decode_events('{"seq":1,"time":1}'))
-        self.assertEqual([], decode_events('{"events":[]}'))
+        self.assertEqual([], decode_events('{"events":[]}').events)
         self.assertIsNone(decode_chassis("not-json"))
         self.assertIsNone(decode_chassis('{"linear":{"x":1}}'))
 
@@ -336,7 +336,7 @@ class StepBIntentTopicTest(unittest.TestCase):
                     ],
                 }
             )
-        )
+        ).events
         executor.apply_events(events)
         self.assertAlmostEqual(11.0, executor.gain)
         self.assertAlmostEqual(5600.0, executor.exposure)
@@ -352,13 +352,13 @@ class StepBIntentTopicTest(unittest.TestCase):
         self.assertEqual(0.2, config["light"]["home_restore_brightness"])
         executor, pubs, _logger = make_executor()
         self.assertAlmostEqual(0.2, executor.brightness)
-        executor.apply_events(decode_events('{"type":"home"}'))
+        executor.apply_events(decode_events('{"type":"home"}').events)
         self.assertEqual([0.0], [message.data for message in pubs["light_brightness"].messages])
         self.assertEqual([False, False], [message.data for message in pubs["light_power"].messages])
         self.assertFalse(executor.light_on)
         pubs["light_power"].messages[:] = []
         pubs["light_brightness"].messages[:] = []
-        executor.apply_events(decode_events('{"type":"home"}'))
+        executor.apply_events(decode_events('{"type":"home"}').events)
         self.assertEqual([True, True], [message.data for message in pubs["light_power"].messages])
         self.assertEqual([0.2], [message.data for message in pubs["light_brightness"].messages])
         self.assertAlmostEqual(0.2, executor.brightness)
@@ -421,19 +421,19 @@ class StepBIntentTopicTest(unittest.TestCase):
         self.assertTrue(frame_has_discrete_content(switched.events))
         raw = events_message(switched.events, 10.5, 2)
         decoded = decode_events(raw)
-        self.assertEqual(switched.events, decoded)
+        self.assertEqual(switched.events, decoded.events)
         self.assertEqual(
             [EVENT_R3, EVENT_MODE, EVENT_ADJUST, EVENT_ADJUST],
-            [event["type"] for event in decoded],
+            [event["type"] for event in decoded.events],
         )
-        self.assertEqual(R3_IDLE, decoded[0]["phase"])
-        self.assertEqual("camera", decoded[1]["mode"])
+        self.assertEqual(R3_IDLE, decoded.events[0]["phase"])
+        self.assertEqual("camera", decoded.events[1]["mode"])
         self.assertEqual(
             [
                 {"type": EVENT_ADJUST, "target": TARGET_GAIN, "direction": 1},
                 {"type": EVENT_ADJUST, "target": TARGET_EXPOSURE, "direction": 1},
             ],
-            decoded[2:],
+            decoded.events[2:],
         )
         self.assertEqual(2, json.loads(raw)["seq"])
 
@@ -514,11 +514,11 @@ class StepBIntentTopicTest(unittest.TestCase):
             raw = events_message(result.events, now, len(phases))
             self.assertIsNotNone(raw)
             decoded = decode_events(raw)
-            self.assertEqual(EVENT_R3, decoded[0]["type"])
+            self.assertEqual(EVENT_R3, decoded.events[0]["type"])
             self.assertNotIn("buttons", raw)
-            if decoded[0]["phase"] == R3_HOLD:
-                held_for = decoded[0]["held_for"]
-            executor.apply_events(decoded)
+            if decoded.events[0]["phase"] == R3_HOLD:
+                held_for = decoded.events[0]["held_for"]
+            executor.apply_events(decoded.events)
         self.assertEqual([R3_SYNC, R3_PRESS, R3_HOLD], phases)
         self.assertGreaterEqual(held_for, 1.5)
         self.assertEqual([VIDEO_COMMAND_STOP], list(executor.video_command_queue.queue))
@@ -530,7 +530,9 @@ class StepBIntentTopicTest(unittest.TestCase):
         release_executor.video_input_state = VIDEO_RECORDING
         for now, buttons in ((1.0, make_buttons()), (1.10, make_buttons(right_stick=True)), (1.20, make_buttons())):
             result = release_parser.update(make_axes(), buttons, now)
-            release_executor.apply_events(decode_events(events_message(result.events, now, 1)))
+            release_executor.apply_events(
+                decode_events(events_message(result.events, now, 1)).events
+            )
         self.assertEqual(R3_RELEASE, result.events[0]["phase"])
         self.assertFalse(result.events[0]["pressed"])
         self.assertEqual([VIDEO_COMMAND_PAUSE], list(release_executor.video_command_queue.queue))
@@ -581,11 +583,15 @@ class StepBIntentTopicTest(unittest.TestCase):
             finished.set()
 
         executor.handle_arm_start = slow
+        executor.arm_clients_ready = True
         executor.start_arm_worker()
         try:
             executor._handle_start({"type": EVENT_START, "index": 7})
             self.assertTrue(entered.wait(1.0))
             self.assertFalse(finished.is_set())
+            executor._handle_start({"type": EVENT_START, "index": 7})
+            self.assertFalse(finished.is_set())
+            self.assertEqual(0, executor._arm_queue.qsize())
             executor.apply_chassis(ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 1.0), 10.0)
             began = time.monotonic()
             executor.publish_chassis(10.0)
@@ -634,7 +640,8 @@ class StepBIntentTopicTest(unittest.TestCase):
 
         self.assertIn('type="joy_intent_node.py"', launch)
         self.assertIn('type="teleop_executor_node.py"', launch)
-        self.assertIn('legacy_single_node" default="false"', launch)
+        self.assertIn('legacy_single_node" default="true"', launch)
+        self.assertIn("legacy_single_node:=false", launch)
         self.assertEqual(1, launch.count("teleop_joy_ctrl_node.py"))
         self.assertNotIn("joy_parser", launch)
         self.assertIn("camera_workspace", launch)
@@ -661,7 +668,165 @@ class StepBIntentTopicTest(unittest.TestCase):
         self.assertNotIn("sensor_msgs", executor_node)
         self.assertIn("无法解析底盘意图", executor_node)
         self.assertIn("无法解析离散事件", executor_node)
-        self.assertIn("if stamp is None", executor_node)
+        self.assertIn("stamp=stamp", executor_node)
+        self.assertIn("apply_event_message", executor_node)
+        self.assertNotIn("apply_chassis(intent, stamp)", executor_node)
+        self.assertIn("session=self._session", intent)
+
+    def test_oversized_axis_cannot_exceed_speed_limit(self):
+        executor, pubs, _logger = make_executor()
+        forged = ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 10.0)
+        self.assertTrue(executor.apply_chassis(forged, 10.0, stamp=10.0))
+        self.assertEqual(1.0, executor._chassis_intent.left_y)
+        executor.publish_chassis(10.0)
+        self.assertAlmostEqual(0.4, pubs["cmd_vel"].messages[-1].linear.x)
+        self.assertLess(pubs["cmd_vel"].messages[-1].linear.x, 1.0)
+        direct = executor.make_chassis_twist(
+            ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 10.0)
+        )
+        self.assertAlmostEqual(0.4, direct.linear.x)
+
+        self.assertTrue(
+            executor.apply_chassis(ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 1.0), 11.0, stamp=11.0)
+        )
+        self.assertFalse(
+            executor.apply_chassis(
+                ChassisIntent(True, SPEED_GEAR_HIGH, float("nan"), 1.0),
+                11.1,
+                stamp=11.1,
+            )
+        )
+        self.assertEqual(11.0, executor._last_joy_time)
+        self.assertEqual(1.0, executor._chassis_intent.left_y)
+
+    def test_future_chassis_stamp_does_not_extend_timeout(self):
+        executor, pubs, logger = make_executor()
+        moving = ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 1.0)
+        self.assertTrue(executor.apply_chassis(moving, 10.0, stamp=10.0))
+        executor.publish_chassis(10.0)
+        self.assertAlmostEqual(0.4, pubs["cmd_vel"].messages[-1].linear.x)
+
+        self.assertFalse(executor.apply_chassis(moving, 10.1, stamp=109.0))
+        self.assertEqual(10.0, executor._last_joy_time)
+        self.assertFalse(executor._joy_is_fresh(109.0))
+        executor.publish_chassis(109.0)
+        self.assertEqual(0.0, pubs["cmd_vel"].messages[-1].linear.x)
+        self.assertFalse(executor.chassis_command_active)
+        self.assertTrue(any("时间超前" in text for _level, text in logger.lines))
+
+        fresh = make_executor()[0]
+        self.assertTrue(fresh.apply_chassis(moving, 10.3, stamp=10.0))
+        self.assertEqual(10.3, fresh._last_joy_time)
+        self.assertTrue(fresh._joy_is_fresh(10.7))
+        self.assertFalse(
+            fresh.apply_chassis(ChassisIntent(True, SPEED_GEAR_HIGH, 0.0, 0.2), 12.0, stamp=10.0)
+        )
+        self.assertEqual(10.3, fresh._last_joy_time)
+        self.assertEqual(1.0, fresh._chassis_intent.left_y)
+
+    def test_duplicate_and_retired_events_do_not_refire(self):
+        executor, _pubs, _logger = make_executor()
+        home = [{"type": "home"}]
+        self.assertTrue(self._deliver(executor, home, 10.0, 1, "s1"))
+        self.assertFalse(executor.light_on)
+        self.assertAlmostEqual(0.0, executor.brightness)
+        self.assertFalse(self._deliver(executor, home, 10.1, 1, "s1"))
+        self.assertFalse(executor.light_on)
+        self.assertFalse(self._deliver(executor, home, 11.0, 2, "s1", stamp=10.0))
+        self.assertFalse(self._deliver(executor, home, 11.0, 3, "s1", stamp=200.0))
+        self.assertFalse(executor.light_on)
+
+        self.assertTrue(self._deliver(executor, home, 11.2, 1, "s2"))
+        self.assertTrue(executor.light_on)
+        self.assertAlmostEqual(0.2, executor.brightness)
+        self.assertFalse(self._deliver(executor, home, 11.3, 4, "s1"))
+        self.assertFalse(self._deliver(executor, home, 11.3, 1, "s2"))
+        self.assertTrue(executor.light_on)
+        self.assertAlmostEqual(0.2, executor.brightness)
+
+    def test_executor_lock_survives_intent_restart(self):
+        executor, _pubs, logger = make_executor()
+        executor.locked = True
+        self.assertTrue(self._deliver(
+            executor,
+            [
+                {"type": "adjust", "target": "linear_speed", "direction": 1},
+                {"type": "home"},
+            ],
+            30.0,
+            1,
+            "restarted",
+        ))
+        self.assertTrue(executor.locked)
+        self.assertAlmostEqual(0.4, executor.max_linear_speed)
+        self.assertTrue(executor.light_on)
+        self.assertAlmostEqual(0.2, executor.brightness)
+        self.assertTrue(any("参数已锁定" in text for _level, text in logger.lines))
+
+        self.assertTrue(self._deliver(
+            executor,
+            [
+                {"type": "lock", "locked": False},
+                {"type": "adjust", "target": "linear_speed", "direction": 1},
+            ],
+            30.2,
+            2,
+            "restarted",
+        ))
+        self.assertFalse(executor.locked)
+        self.assertAlmostEqual(0.44, executor.max_linear_speed)
+
+        same_frame, _pubs, _logger = make_executor()
+        self.assertTrue(self._deliver(
+            same_frame,
+            [
+                {"type": "lock", "locked": True},
+                {"type": "home"},
+                {"type": "adjust", "target": "linear_speed", "direction": 1},
+            ],
+            5.0,
+            1,
+            "session",
+        ))
+        self.assertTrue(same_frame.locked)
+        self.assertTrue(same_frame.light_on)
+        self.assertAlmostEqual(0.4, same_frame.max_linear_speed)
+
+    def test_offline_start_is_not_replayed_after_arm_recovery(self):
+        executor, _pubs, logger = make_executor()
+        calls = []
+        ran = threading.Event()
+
+        def record():
+            calls.append(1)
+            ran.set()
+
+        executor.start_arm_worker()
+        try:
+            executor._handle_start({"type": EVENT_START, "index": 7})
+            executor._handle_start({"type": EVENT_START, "index": 7})
+            time.sleep(0.2)
+            self.assertEqual(0, executor._arm_queue.qsize())
+            self.assertFalse(executor._arm_job_pending)
+            self.assertEqual([], calls)
+            self.assertGreaterEqual(
+                sum(1 for _level, text in logger.lines if "已忽略本次START" in text),
+                2,
+            )
+            executor.handle_arm_start = record
+            executor.arm_clients_ready = True
+            executor._handle_start({"type": EVENT_START, "index": 7})
+            self.assertTrue(ran.wait(1.0))
+            time.sleep(0.2)
+            self.assertEqual([1], calls)
+        finally:
+            executor.stop_arm_worker()
+
+    def _deliver(self, executor, events, now, seq, session, stamp=None):
+        if stamp is None:
+            stamp = now
+        message = decode_events(encode_events(events, stamp, seq=seq, session=session))
+        return executor.apply_event_message(message, now)
 
     def _apply_published_r3(self, executor, samples):
         parser = make_parser()
@@ -676,7 +841,7 @@ class StepBIntentTopicTest(unittest.TestCase):
                 self.assertIsNone(payload)
                 continue
             self.assertIsNotNone(payload)
-            executor.apply_events(decode_events(payload))
+            executor.apply_events(decode_events(payload).events)
         return list(executor.video_command_queue.queue)
 
     def _run_script(self, executor, samples, via_topic):
@@ -686,11 +851,11 @@ class StepBIntentTopicTest(unittest.TestCase):
             result = parser.update(axes, buttons, now)
             if via_topic:
                 intent, stamp = decode_chassis(encode_chassis(result.chassis, now))
-                executor.apply_chassis(intent, stamp)
+                executor.apply_chassis(intent, now, stamp=stamp)
                 payload = events_message(result.events, now, seq + 1)
                 if payload is not None:
                     seq += 1
-                    executor.apply_events(decode_events(payload))
+                    executor.apply_events(decode_events(payload).events)
             else:
                 executor.apply(result, now)
             if publish:
