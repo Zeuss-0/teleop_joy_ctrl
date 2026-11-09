@@ -27,28 +27,15 @@ from teleop_joy_ctrl.joy_parser import (
     EVENT_HOME,
     EVENT_LOCK,
     EVENT_MODE,
-    EVENT_R3,
     EVENT_START,
     ChassisIntent,
     JoyParser,
-    R3_HOLD,
-    R3_IDLE,
-    R3_PRESS,
-    R3_RELEASE,
-    R3_SYNC,
     SPEED_GEAR_HIGH,
     SPEED_GEAR_LOW,
     TARGET_EXPOSURE,
     TARGET_GAIN,
 )
-from teleop_joy_ctrl.teleop_executor import (
-    VIDEO_COMMAND_PAUSE,
-    VIDEO_COMMAND_START,
-    VIDEO_COMMAND_STOP,
-    VIDEO_PAUSED,
-    VIDEO_RECORDING,
-    TeleopExecutor,
-)
+from teleop_joy_ctrl.teleop_executor import TeleopExecutor
 
 
 BUTTONS = {
@@ -195,11 +182,6 @@ def make_executor():
             "brightness_topic": "/light/brightness_cmd",
         },
         arm={"enabled": False},
-        video={
-            "enabled": True,
-            "double_click_interval": 0.4,
-            "long_press_duration": 1.5,
-        },
         joy_timeout=0.5,
         debug_success_logs=True,
         chassis_debug_interval=1.0,
@@ -235,8 +217,6 @@ def snapshot(executor, pubs):
         "light_on": executor.light_on,
         "active": executor.chassis_command_active,
         "locked": executor.locked,
-        "video_queue": list(executor.video_command_queue.queue),
-        "video_input": executor.video_input_state,
     }
 
 
@@ -402,20 +382,24 @@ class StepBIntentTopicTest(unittest.TestCase):
         executor.publish_chassis(20.8)
         self.assertEqual(count, len(pubs["cmd_vel"].messages))
 
-    def test_parser_frames_keep_order_and_skip_pure_idle(self):
+    def test_parser_frames_keep_order_and_skip_empty_frames(self):
         parser = make_parser()
-        boot = parser.update(make_axes(), make_buttons(), 10.0)
-        self.assertEqual(R3_SYNC, boot.events[0]["phase"])
-        self.assertTrue(frame_has_discrete_content(boot.events))
-        idle = parser.update(make_axes(left_y=1.0), make_buttons(right_shoulder=True), 10.1)
-        self.assertEqual([EVENT_R3], [event["type"] for event in idle.events])
-        self.assertEqual(R3_IDLE, idle.events[0]["phase"])
+        boot = parser.update(make_axes(), make_buttons(right_stick=True), 10.0)
+        self.assertEqual([], boot.events)
+        self.assertFalse(frame_has_discrete_content(boot.events))
+        self.assertIsNone(events_message(boot.events, 10.0, 1))
+        idle = parser.update(
+            make_axes(left_y=1.0),
+            make_buttons(right_shoulder=True, right_stick=True),
+            10.1,
+        )
+        self.assertEqual([], idle.events)
         self.assertFalse(frame_has_discrete_content(idle.events))
         self.assertIsNone(events_message(idle.events, 10.1, 2))
 
         switched = parser.update(
             make_axes(left_trigger=-1.0, dpad_x=-1.0, dpad_y=1.0),
-            make_buttons(b=True),
+            make_buttons(b=True, right_stick=True),
             10.5,
         )
         self.assertTrue(frame_has_discrete_content(switched.events))
@@ -423,18 +407,18 @@ class StepBIntentTopicTest(unittest.TestCase):
         decoded = decode_events(raw)
         self.assertEqual(switched.events, decoded.events)
         self.assertEqual(
-            [EVENT_R3, EVENT_MODE, EVENT_ADJUST, EVENT_ADJUST],
+            [EVENT_MODE, EVENT_ADJUST, EVENT_ADJUST],
             [event["type"] for event in decoded.events],
         )
-        self.assertEqual(R3_IDLE, decoded.events[0]["phase"])
-        self.assertEqual("camera", decoded.events[1]["mode"])
+        self.assertEqual("camera", decoded.events[0]["mode"])
         self.assertEqual(
             [
                 {"type": EVENT_ADJUST, "target": TARGET_GAIN, "direction": 1},
                 {"type": EVENT_ADJUST, "target": TARGET_EXPOSURE, "direction": 1},
             ],
-            decoded.events[2:],
+            decoded.events[1:],
         )
+        self.assertNotIn("r3", raw)
         self.assertEqual(2, json.loads(raw)["seq"])
 
     def test_topic_delivery_matches_in_process_executor(self):
@@ -496,80 +480,41 @@ class StepBIntentTopicTest(unittest.TestCase):
             any("START按键已识别 index=7 locked=是" in text for _level, text in remote_logs.lines)
         )
 
-    def test_r3_hold_and_release_arrive_as_gesture_events(self):
+    def test_r3_gestures_are_not_published_or_executed(self):
         parser = make_parser()
         executor, _pubs, logger = make_executor()
-        executor.video_state = VIDEO_RECORDING
-        executor.video_input_state = VIDEO_RECORDING
-        samples = [
-            (2.0, make_buttons(), make_axes()),
-            (2.10, make_buttons(right_stick=True), make_axes()),
-            (3.70, make_buttons(right_stick=True), make_axes()),
-        ]
-        phases = []
-        held_for = None
-        for now, buttons, axes in samples:
-            result = parser.update(axes, buttons, now)
-            phases.append(result.events[0]["phase"])
-            raw = events_message(result.events, now, len(phases))
-            self.assertIsNotNone(raw)
-            decoded = decode_events(raw)
-            self.assertEqual(EVENT_R3, decoded.events[0]["type"])
-            self.assertNotIn("buttons", raw)
-            if decoded.events[0]["phase"] == R3_HOLD:
-                held_for = decoded.events[0]["held_for"]
-            executor.apply_events(decoded.events)
-        self.assertEqual([R3_SYNC, R3_PRESS, R3_HOLD], phases)
-        self.assertGreaterEqual(held_for, 1.5)
-        self.assertEqual([VIDEO_COMMAND_STOP], list(executor.video_command_queue.queue))
-        self.assertTrue(any("R3录像指令已识别" in text for _level, text in logger.lines))
-
-        release_parser = make_parser()
-        release_executor, _pubs, release_logger = make_executor()
-        release_executor.video_state = VIDEO_RECORDING
-        release_executor.video_input_state = VIDEO_RECORDING
-        for now, buttons in ((1.0, make_buttons()), (1.10, make_buttons(right_stick=True)), (1.20, make_buttons())):
-            result = release_parser.update(make_axes(), buttons, now)
-            release_executor.apply_events(
-                decode_events(events_message(result.events, now, 1)).events
-            )
-        self.assertEqual(R3_RELEASE, result.events[0]["phase"])
-        self.assertFalse(result.events[0]["pressed"])
-        self.assertEqual([VIDEO_COMMAND_PAUSE], list(release_executor.video_command_queue.queue))
-        self.assertEqual(VIDEO_PAUSED, release_executor.video_input_state)
-        self.assertTrue(any("R3录像指令已识别" in text for _level, text in release_logger.lines))
-
-    def test_skipped_idle_frames_still_honor_double_click_window(self):
-        inside, _pubs, _logger = make_executor()
-        self.assertEqual(
-            [VIDEO_COMMAND_START],
-            self._apply_published_r3(
-                inside,
-                [
-                    (0.00, False),
-                    (0.10, True),
-                    (0.18, False),
-                    (0.22, False),
-                    (0.30, True),
-                ],
-            ),
+        samples = (
+            (2.0, False),
+            (2.10, True),
+            (3.70, True),
+            (3.80, False),
+            (4.00, True),
+            (4.10, False),
+            (4.30, True),
         )
-
-        outside, _pubs, _logger = make_executor()
-        self.assertEqual(
-            [],
-            self._apply_published_r3(
-                outside,
-                [
-                    (0.00, False),
-                    (0.10, True),
-                    (0.18, False),
-                    (0.70, False),
-                    (0.80, True),
-                    (0.90, False),
-                ],
-            ),
-        )
+        for now, pressed in samples:
+            result = parser.update(make_axes(), make_buttons(right_stick=pressed), now)
+            self.assertEqual([], result.events)
+            self.assertIsNone(events_message(result.events, now, 1))
+            executor.apply(result, now)
+        forged = decode_events(encode_events(
+            [{
+                "type": "r3",
+                "phase": "hold",
+                "pressed": True,
+                "time": 5.0,
+                "held_for": 2.0,
+            }],
+            5.0,
+            seq=1,
+            session="legacy",
+        ))
+        self.assertTrue(executor.apply_event_message(forged, 5.0))
+        self.assertIsNone(events_message(forged.events, 5.0, 2, session="legacy"))
+        self.assertFalse(hasattr(executor, "video_command_queue"))
+        self.assertFalse(any("录像" in text or "R3" in text for _level, text in logger.lines))
+        self.assertTrue(executor.light_on)
+        self.assertAlmostEqual(0.2, executor.brightness)
 
     def test_arm_worker_keeps_chassis_publish_off_the_blocking_path(self):
         executor, pubs, _logger = make_executor()
@@ -623,7 +568,6 @@ class StepBIntentTopicTest(unittest.TestCase):
                 "right_shoulder": 5,
                 "start": 7,
                 "home": 8,
-                "right_stick": 10,
             },
             config["buttons"],
         )
@@ -663,6 +607,7 @@ class StepBIntentTopicTest(unittest.TestCase):
 
         self.assertIn("start_arm_worker", executor_node)
         self.assertIn("stop_arm_worker", executor_node)
+        self.assertNotIn("init_video_clients", executor_node)
         self.assertNotIn("init_arm_clients", executor_node)
         self.assertNotIn("wait_for_service", executor_node)
         self.assertNotIn("sensor_msgs", executor_node)
@@ -827,22 +772,6 @@ class StepBIntentTopicTest(unittest.TestCase):
             stamp = now
         message = decode_events(encode_events(events, stamp, seq=seq, session=session))
         return executor.apply_event_message(message, now)
-
-    def _apply_published_r3(self, executor, samples):
-        parser = make_parser()
-        for now, pressed in samples:
-            result = parser.update(
-                make_axes(),
-                make_buttons(right_stick=pressed),
-                now,
-            )
-            payload = events_message(result.events, now, 1)
-            if result.events[0]["phase"] == R3_IDLE:
-                self.assertIsNone(payload)
-                continue
-            self.assertIsNotNone(payload)
-            executor.apply_events(decode_events(payload).events)
-        return list(executor.video_command_queue.queue)
 
     def _run_script(self, executor, samples, via_topic):
         parser = make_parser()

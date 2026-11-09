@@ -45,12 +45,10 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch start_arm_bringup:=false
 | Y，再按住左扳机 + 方向上/下 | 调光源亮度；亮度为零时也能上调 |
 | START | 按机械臂状态清错、下使能或上使能 |
 | HOME | 关闭光源，或恢复配置的亮度 |
-| X | 切换参数锁定；底盘运动、START 和 R3 仍可用 |
-| 空闲时双击 R3 | 开始录像 |
-| 录像或暂停时短按 R3 | 暂停/继续 |
-| 长按 R3 至少 1.5 秒 | 保存并结束录像 |
+| X | 切换参数锁定；底盘运动和 START 仍可用 |
+| 右摇杆按下（R3） | 无功能。不会开始、暂停或结束录像 |
 
-方向上/右增加，下/左减少。A/B/Y 用于选择调节模式，调节时需按住左扳机。R3 是右摇杆按下，对应 `button 10`；映射可在配置中修改。
+方向上/右增加，下/左减少。A/B/Y 用于选择调节模式，调节时需按住左扳机。映射可在配置中修改。右摇杆按下不绑定功能。
 
 按住肩键时，总控发布 `/teleop_joy_ctrl/cmd_vel`。松开后发送一次零速度并停止发布，导航在 mux 超时后可重新接管底盘。
 
@@ -71,7 +69,7 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch start_arm_bringup:=false
 | `<时间戳>.mp4` | 原始相机画面 | 持续录制 |
 | `aimed_<时间戳>.mp4` | 原始相机画面 | 停止写入 |
 
-两个录像节点始终订阅 `/camera/image_raw`；暂停只影响 aimed 视频写入。长按 R3 结束录像后，单独启动的相机继续运行。
+两个录像节点始终订阅 `/camera/image_raw`；暂停只影响 aimed 视频写入。结束录像后，单独启动的相机继续运行。手柄不会调用这些录像服务。
 
 如需保存完整的 YOLO 检测视频，在另一个已加载相机工作空间的终端执行：
 
@@ -81,7 +79,7 @@ rosrun --prefix "$DETECTION_PYTHON" \
   mvs yolo_detector.py --save-yolo-video
 ```
 
-YOLO 视频使用独立的录制时间和输出目录，R3 不控制它的暂停或结束。只需实时检测时，去掉保存参数。
+YOLO 视频使用独立的录制时间和输出目录，手柄不控制它的暂停或结束。只需实时检测时，去掉保存参数。
 
 切换到旧版 YOLO 耦合录像：
 
@@ -125,7 +123,7 @@ export TELEOP_DETECTION_PYTHON="$HOME/miniconda3/envs/detection/bin/python"
 
 ## 配置与排查
 
-`config/default.yaml` 配置按键、速度上限、相机调节、光源亮度和 R3 手势时间；`hybrid_video_recorder/config/default.yaml` 配置录像目录及写入参数。
+`config/default.yaml` 配置按键、速度上限、相机调节和光源亮度；`hybrid_video_recorder/config/default.yaml` 配置录像目录及写入参数。录像服务仍可供其他调用方使用，手柄不会开始或结束录像。
 
 光源亮度 `0.0~1.0` 映射到串口 `0~255`，例如 `0.2` 对应 `51`。HOME 通过 `/dev/light_port` 下发开关与亮度指令。启动光源状态按配置假定，未读取硬件状态。总控 YAML 中的相机默认值不会单独设置相机启动时的曝光和增益。
 

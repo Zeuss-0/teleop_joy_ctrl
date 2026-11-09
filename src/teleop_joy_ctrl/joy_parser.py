@@ -6,7 +6,7 @@
 本模块不依赖 rospy，也不合成 Twist。每一帧只产出：
 
 - 底盘意图：是否接管（active）、肩键档位（low/high）、死区后的摇杆轴
-- 一条有序离散事件列表：R3 手势、锁定、START、模式、HOME、调参
+- 一条有序离散事件列表：锁定、START、模式、HOME、调参
 
 active 为真且轴为 0 表示肩键按住、摇杆居中，调用方应继续占住速度通道。
 active 为假表示释放控制权。限速、倍率和 Twist 由执行器计算。
@@ -24,18 +24,11 @@ SPEED_GEAR_NONE = 'none'
 SPEED_GEAR_LOW = 'low'
 SPEED_GEAR_HIGH = 'high'
 
-EVENT_R3 = 'r3'
 EVENT_LOCK = 'lock'
 EVENT_START = 'start'
 EVENT_MODE = 'mode'
 EVENT_HOME = 'home'
 EVENT_ADJUST = 'adjust'
-
-R3_SYNC = 'sync'
-R3_PRESS = 'press'
-R3_HOLD = 'hold'
-R3_RELEASE = 'release'
-R3_IDLE = 'idle'
 
 TARGET_LINEAR_SPEED = 'linear_speed'
 TARGET_ANGULAR_SPEED = 'angular_speed'
@@ -90,8 +83,6 @@ class JoyParser(object):
         self.active_mode = ACTIVE_MODE_NONE
         self._last_buttons = None
         self._last_adjust_time = 0.0
-        self._r3_was_pressed = False
-        self._r3_press_started_at = 0.0
 
     def update(self, axes, buttons, now):
         axes = list(axes or [])
@@ -101,9 +92,9 @@ class JoyParser(object):
 
         if self._last_buttons is None:
             self._last_buttons = buttons
-            return ParseResult(chassis, [self._r3_event(buttons, now, sync=True)])
+            return ParseResult(chassis, [])
 
-        events = [self._r3_event(buttons, now, sync=False)]
+        events = []
 
         if self._rising(buttons, 'x'):
             self.locked = not self.locked
@@ -188,40 +179,6 @@ class JoyParser(object):
             'type': EVENT_ADJUST,
             'target': target,
             'direction': int(direction),
-        }
-
-    def _r3_event(self, buttons, now, sync):
-        pressed = self._held(buttons, 'right_stick')
-        if sync:
-            self._r3_was_pressed = pressed
-            self._r3_press_started_at = now
-            return self._r3_sample(R3_SYNC, pressed, now, 0.0)
-
-        if pressed and not self._r3_was_pressed:
-            phase = R3_PRESS
-            self._r3_press_started_at = now
-            held_for = 0.0
-        elif pressed and self._r3_was_pressed:
-            phase = R3_HOLD
-            held_for = now - self._r3_press_started_at
-        elif not pressed and self._r3_was_pressed:
-            phase = R3_RELEASE
-            held_for = now - self._r3_press_started_at
-        else:
-            phase = R3_IDLE
-            held_for = 0.0
-
-        self._r3_was_pressed = pressed
-        return self._r3_sample(phase, pressed, now, held_for)
-
-    @staticmethod
-    def _r3_sample(phase, pressed, now, held_for):
-        return {
-            'type': EVENT_R3,
-            'phase': phase,
-            'pressed': bool(pressed),
-            'time': float(now),
-            'held_for': float(held_for),
         }
 
     def _rising(self, buttons, name):

@@ -45,12 +45,10 @@ After installing or changing the packages, build `catkin_ws` first, then `moma_w
 | Y, then left trigger + D-pad up/down | Light brightness, including increasing from zero |
 | START | Clear arm errors/collision, disable enabled states, or enable other states |
 | HOME | Turn the light off or restore the configured brightness |
-| X | Toggle parameter lock; motion, START, and R3 remain available |
-| R3 double-click while idle | Start recording |
-| R3 short-click while recording/paused | Pause/resume |
-| R3 hold for at least 1.5 seconds | Save and stop recording |
+| X | Toggle parameter lock; motion and START remain available |
+| Right-stick click (R3) | No action. It does not start, pause, or stop recording |
 
-Up/right increases; down/left decreases. A/B/Y selects the parameter mode; hold the left trigger while adjusting. R3 is right-stick press (`button 10`); mappings are configurable.
+Up/right increases; down/left decreases. A/B/Y selects the parameter mode; hold the left trigger while adjusting. Mappings are configurable. Right-stick click is not bound.
 
 Manual motion publishes `/teleop_joy_ctrl/cmd_vel` while a shoulder button is held. Releasing it sends one stop command, then stops publishing; navigation can regain control after the mux timeout.
 
@@ -71,7 +69,7 @@ Videos are saved under the camera package recordings directory:
 | `<timestamp>.mp4` | Original camera frames | Keeps recording |
 | `aimed_<timestamp>.mp4` | Original camera frames | Stops writing |
 
-Both workers keep subscribing to `/camera/image_raw`; pause affects only aimed-video writing. Ending an R3 session leaves the separately started camera running.
+Both workers keep subscribing to `/camera/image_raw`; pause affects only aimed-video writing. Stopping a recording leaves the separately started camera running. The gamepad does not call these services.
 
 To save a complete YOLO-annotated video, run this in another terminal with the camera workspace sourced:
 
@@ -81,7 +79,7 @@ rosrun --prefix "$DETECTION_PYTHON" \
   mvs yolo_detector.py --save-yolo-video
 ```
 
-YOLO recording has its own lifetime and output directory. R3 does not pause or stop it. Omit the flag for detection only.
+YOLO recording has its own lifetime and output directory. The gamepad does not pause or stop it. Omit the flag for detection only.
 
 To use the previous YOLO-coupled backend:
 
@@ -125,7 +123,7 @@ export TELEOP_DETECTION_PYTHON="$HOME/miniconda3/envs/detection/bin/python"
 
 ## Configuration and Checks
 
-Edit `config/default.yaml` for button mapping, speed limits, camera adjustment, light brightness, and R3 timing. Edit `hybrid_video_recorder/config/default.yaml` for the recording directory and writer settings.
+Edit `config/default.yaml` for button mapping, speed limits, camera adjustment, and light brightness. Edit `hybrid_video_recorder/config/default.yaml` for the recording directory and writer settings. Recording stays available to other callers through the video manager services; the gamepad does not start or stop it.
 
 Light brightness is normalized: `0.0~1.0` maps to serial `0~255` (`0.2` gives `51`). HOME sends power and brightness commands through `/dev/light_port`. Initial light state is assumed from configuration, not read from hardware. Camera defaults in the controller YAML do not alone set the camera's startup exposure/gain.
 
