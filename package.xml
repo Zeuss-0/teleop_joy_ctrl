@@ -17,11 +17,7 @@
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>dobot_v4_bringup</depend>
 
-  <exec_depend>rosnode</exec_depend>
-  <exec_depend>rosgraph</exec_depend>
   <exec_depend>twist_mux</exec_depend>
-  <exec_depend>hybrid_video_recorder</exec_depend>
 </package>

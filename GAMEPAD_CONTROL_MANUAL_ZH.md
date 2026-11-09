@@ -1,7 +1,7 @@
 # 机器人手柄控制说明书
 
 版本：第一版现场操作稿  
-更新日期：2026-07-27  
+更新日期：2026-11-09  
 适用功能包：`teleop_joy_ctrl`（ROS1）  
 适用对象：机器人现场操作、联调和故障排查人员
 
@@ -17,7 +17,7 @@
 - 手柄参数锁定；
 - 手柄控制与自主导航之间的自动切换。
 
-右摇杆按下（R3）不控制录像，也不会发出录像相关意图。
+右摇杆按下（R3）未绑定功能，也不会发出控制意图。
 
 手柄输入话题默认为 `/joy_teleop/joy`。手柄小车速度发布到 `/teleop_joy_ctrl/cmd_vel`，经接管用 `twist_mux` 输出到 `/bulldog_velocity_controller/cmd_vel`。
 
@@ -44,7 +44,7 @@ source ~/moma_ws/devel/setup.bash
 roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch
 ```
 
-上述 `~/test_ws`、`~/catkin_ws`、`~/moma_ws` 是示例工作空间。换机器时改成现场实际路径。旧版录像自动拉起相机和 YOLO 时，相机工作空间与检测 Python 的覆盖方式见第 16 节。
+上述 `~/test_ws`、`~/catkin_ws`、`~/moma_ws` 是示例工作空间。换机器时改成现场实际路径。本功能包不启动录像。
 
 默认 launch 会同时启动：
 
@@ -52,7 +52,6 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch
 - `dobot_v4_bringup/bringup_v4.launch`；
 - `teleop_joy_ctrl_node.py`；
 - `light_serial_controller_node.py`；
-- `video_recording_manager_node.py`；
 - 退出时恢复系统原手柄节点的守护节点。
 
 导航可以先启动，再启动手柄总控。手柄未主动控制小车时，总控不会持续发送零速度，不会阻断导航。
@@ -82,7 +81,7 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
 | 右肩键 RB | button 5 | 高速小车控制使能 |
 | START | button 7 | 机械臂状态控制 |
 | HOME | button 8 | 光源开关 |
-| 右摇杆按下 R3 | button 10 | 不使用，不开始、暂停或结束录像 |
+| 右摇杆按下 R3 | button 10 | 未绑定，不执行任何操作 |
 | BACK | 未绑定 | 预留，不执行任何操作 |
 
 如更换手柄，必须先用下面的命令重新核对索引：
@@ -397,133 +396,11 @@ rostopic echo /camera/gain_cmd
 
 节点收到第一帧 Joy 消息时会先记录按键状态。若启动节点时某个按键已经按住，需要先松开，再重新按一次。LB/RB 的持续运动控制不依赖该边沿逻辑。
 
-## 15. 默认混合解耦录像
-
-手柄 R3 不再开始、暂停或结束录像。默认仍可启动 `hybrid_video_recorder`，供其他调用方使用，由三个独立节点组成：
-
-- `hybrid_video_recorder/raw`：持续订阅 `/camera/image_raw`，录制与暂停期间均写入原始视频。
-- `hybrid_video_recorder/aimed`：持续订阅同一话题，仅在“录制中”写入 aimed 视频。
-- `video_recording_manager_node`：保持原有 `/teleop_joy_ctrl/video/*` 服务，协调两个写入节点。
-
-相机 `camera_stream` 不由手柄启动或结束，必须作为独立进程先启动：
-
-```bash
-source ~/catkin_ws/devel/setup.bash
-rosrun mvs camera_stream
-```
-
-其他调用方开始录像后，管理器在同一时间戳目录中创建：
-
-```text
-<时间戳>.mp4
-aimed_<时间戳>.mp4
-```
-
-暂停时，两个工作节点保持图像订阅不断开：原始视频继续写入，aimed 视频停止写入；继续后 aimed 写入同一文件。结束时，两个独立 FFmpeg 写入器分别封装。aimed 写入或 YOLO 检测失败不会取消原始视频保存。这些动作不由 R3 触发。
-
-YOLO 是此模式下的独立可选进程，不会阻断原始视频保存。需要临时回退旧版 YOLO 耦合录像时，使用：
-
-```bash
-roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
-  start_hybrid_video_manager:=false \
-  start_legacy_video_manager:=true
-```
-
-## 16. 旧版 YOLO 耦合录像回退
-
-右摇杆按下在 `/joy_teleop/joy` 上仍是 `buttons[10]`，但总控不再读取该按键。录像不随 X 锁定变化，因为手柄已不再控制录像。其他调用方仍可使用 `/teleop_joy_ctrl/video/start`、`pause`、`resume` 和 `stop`。
-
-### 15.1 开始录像
-
-调用 `/teleop_joy_ctrl/video/start` 后，录像管理节点会：
-
-1. 从相机工作空间启动 `mvs camera_stream`。工作空间按 launch 参数 `camera_workspace`、`video.camera_workspace`、环境变量 `TELEOP_CAMERA_WORKSPACE`、`rospack find mvs` 所在工作空间、已编译的 `~/catkin_ws` 的顺序解析。
-2. 等待 `/camera/image_raw` 就绪。
-3. 使用检测环境 Python 启动 `mvs yolo_detector.py --save-video`。解释器按 launch 参数 `python_executable`、`video.python_executable`、环境变量 `TELEOP_DETECTION_PYTHON`，以及名为 `detection` 的 conda 环境解析。默认保留 NoMachine 图形预览；无图形终端时将
-   `default.yaml` 中的 `video.detector_headless` 改为 `true`。
-4. 等待 YOLO 录像服务就绪，然后进入 `RECORDING` 状态。
-
-启动 `teleop_joy_ctrl.launch` 时只会按参数启动录像相关节点，不会立即占用相机
-或启动 YOLO。按下 R3 不执行录像操作。
-
-### 15.2 暂停与继续
-
-- `RECORDING` 状态调用 `/teleop_joy_ctrl/video/pause`：暂停 `aimed_<时间戳>.mp4` 的原始帧写入。
-- `PAUSED` 状态调用 `/teleop_joy_ctrl/video/resume`：继续写入同一个 `aimed_<时间戳>.mp4` 文件。
-- 暂停期间相机采集、YOLO 推理、原始连续视频和带识别框视频继续写入；仅 aimed 视频跳过暂停区间。
-- 录制或暂停状态不识别双击，因此快速短按不会被判定为结束录像。
-
-### 15.3 结束并关闭节点
-
-在 `RECORDING` 或 `PAUSED` 状态调用 `/teleop_joy_ctrl/video/stop`：
-
-1. 禁止新录像帧入队并排空待写队列。
-2. 关闭两个 FFmpeg 写入器并完成 MP4 封装。
-3. 关闭管理节点自己启动的 `yolo_detector_node`。
-4. 关闭管理节点自己启动的 `camera_stream_node`。
-5. 录像状态返回 `IDLE`。
-
-自动模式下，管理节点会关闭自己启动的相机和 YOLO 进程。若相机和 YOLO 在启动总控前
-已由人工启动，且 `video.adopt_existing_detector: true`，管理节点会检查相机图像话题、
-YOLO 录像服务和录像状态；检查通过后，下一次 start 会接管现有录像会话，
-不会重新启动第二个 YOLO 进程。
-
-手动接管模式下，pause、resume 和 stop 仍然有效；但 stop 只完成录像封装，不会关闭
-人工启动的进程。结束后按下面命令完全退出：
-
-```bash
-rosservice call /yolo_detector_node/recording/shutdown
-rosnode kill /camera_stream_node
-```
-
-手动启动命令如下，自动拉起 YOLO 失败时可使用此方式：
-
-```bash
-# 终端 1
-source ~/catkin_ws/devel/setup.bash
-rosrun mvs camera_stream
-
-# 终端 2
-source ~/catkin_ws/devel/setup.bash
-# DETECTION_PYTHON 为检测环境解释器，例如 ~/miniconda3/envs/detection/bin/python
-rosrun --prefix "$DETECTION_PYTHON" mvs yolo_detector.py --save-video
-```
-
-### 15.4 文件命名与检查
-
-每次录像只生成一个时间戳。目录和原始视频同名：
-
-```text
-<相机工作空间>/src/mvs/scripts/recordings/20260723_153012/
-├── 20260723_153012.mp4
-├── yolo.mp4
-└── aimed_20260723_153012.mp4
-```
-
-时间戳命名的原始视频与 `yolo.mp4` 从启动到结束连续写入；
-`aimed_时间戳.mp4` 使用原始画面，但仅在“录制中”写入，暂停期间不写入。
-
-常用检查命令：
-
-```bash
-rosnode list | grep -E 'video_recording_manager|camera_stream_node|yolo_detector_node'
-rosservice list | grep '/teleop_joy_ctrl/video'
-rostopic echo /teleop_joy_ctrl/video/state
-rostopic echo /teleop_joy_ctrl/video/status
-rostopic echo /teleop_joy_ctrl/video/output_dir
-```
-
-部署时将 `teleop_joy_ctrl` 放入移动操作工作空间的 `src`（例如 `~/moma_ws/src`），将修改后的
-MVS 文件放入相机工作空间的 `src/mvs`（例如 `~/catkin_ws/src/mvs`）。不要在移动操作工作空间中放置
-第二份 `mvs` 包。
-
-## 17. 当前版本限制
+## 15. 当前版本限制
 
 - 所有调节值默认只保存在当前运行内存中，重启后恢复配置值。
 - 光源启动状态是配置假定值，不是硬件回读值。
 - START 在锁定状态下仍可控制机械臂。
-- BACK 尚未绑定功能。
-- 手柄 R3 不控制录像。旧版录像服务仍依赖 detection Python、FFmpeg 和足够的磁盘空间；自动拉起 YOLO 失败时可使用第 15 节的手动接管流程。
-- 视频全黑通常表示输入画面亮度不足，而非 FFmpeg 封装失败；先检查光源、曝光和增益。
+- BACK 和右摇杆按下（R3）尚未绑定功能。
 - 更换手柄、驱动或系统后，axes/buttons 索引可能改变，必须重新测试。
-- 本说明书依据 2026-07-27 当前代码和 `default.yaml` 编写；后续修改控制逻辑时应同步更新。
+- 本说明书依据 2026-11-09 当前代码和 `default.yaml` 编写；后续修改控制逻辑时应同步更新。

@@ -7,7 +7,6 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
-  std_srvs
 )
 
 catkin_python_setup()
@@ -21,7 +20,6 @@ catkin_install_python(PROGRAMS
   scripts/restore_system_teleop_on_shutdown.py
   scripts/teleop_executor_node.py
   scripts/teleop_joy_ctrl_node.py
-  scripts/video_recording_manager_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

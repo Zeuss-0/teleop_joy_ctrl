@@ -171,23 +171,42 @@ class R3DoesNotRecordTest(unittest.TestCase):
         self.assertAlmostEqual(0.0, executor.brightness)
         self.assertFalse(any("录像" in text or "R3" in text for _level, text in logger.lines))
 
-    def test_config_and_sources_keep_video_nodes_off_the_gamepad(self):
+    def test_recording_integration_is_removed_and_r3_stays_unbound(self):
         config = yaml.safe_load((ROOT / "config" / "default.yaml").read_text())
         self.assertNotIn("right_stick", config["buttons"])
-        self.assertNotIn("double_click_interval", config["video"])
-        self.assertNotIn("long_press_duration", config["video"])
-        self.assertNotIn("manager_command_timeout", config["video"])
-        self.assertEqual("/teleop_joy_ctrl/video/start", config["video"]["start_service"])
-        self.assertEqual("/teleop_joy_ctrl/video/pause", config["video"]["pause_service"])
-        self.assertEqual("/teleop_joy_ctrl/video/resume", config["video"]["resume_service"])
-        self.assertEqual("/teleop_joy_ctrl/video/stop", config["video"]["stop_service"])
+        self.assertNotIn("video", config)
+        self.assertIn("exposure_topic", config["camera"])
+        self.assertIn("gain_topic", config["camera"])
 
         launch = (ROOT / "launch" / "teleop_joy_ctrl.launch").read_text()
-        self.assertIn('start_video_manager" default="true"', launch)
-        self.assertIn('start_hybrid_video_manager" default="true"', launch)
-        self.assertIn('start_legacy_video_manager" default="false"', launch)
+        for removed in (
+            "start_video_manager",
+            "start_hybrid_video_manager",
+            "start_legacy_video_manager",
+            "hybrid_video",
+            "video_recording_manager",
+            "camera_workspace",
+            "python_executable",
+        ):
+            self.assertNotIn(removed, launch)
         self.assertIn('legacy_single_node" default="true"', launch)
-        self.assertIn("video_recording_manager_node.py", launch)
+        self.assertIn('start_light_controller" default="true"', launch)
+
+        package_xml = (ROOT / "package.xml").read_text()
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        for removed in (
+            "hybrid_video_recorder",
+            "std_srvs",
+            "rosnode",
+            "rosgraph",
+            "video_recording_manager_node.py",
+        ):
+            self.assertNotIn(removed, package_xml)
+            self.assertNotIn(removed, cmake)
+
+        self.assertFalse((ROOT / "scripts" / "video_recording_manager_node.py").exists())
+        self.assertFalse((ROOT / "src" / "teleop_joy_ctrl" / "video_process_manager.py").exists())
+        self.assertFalse((ROOT / "src" / "teleop_joy_ctrl" / "runtime_paths.py").exists())
 
         parser_source = (ROOT / "src" / "teleop_joy_ctrl" / "joy_parser.py").read_text()
         executor_source = (ROOT / "src" / "teleop_joy_ctrl" / "teleop_executor.py").read_text()
@@ -195,6 +214,8 @@ class R3DoesNotRecordTest(unittest.TestCase):
         self.assertNotIn("R3GestureInterpreter", executor_source)
         self.assertNotIn("video_command_queue", executor_source)
         self.assertNotIn("init_video_clients", executor_source)
+        self.assertIn("exposure", executor_source)
+        self.assertIn("gain", executor_source)
 
 
 if __name__ == "__main__":
