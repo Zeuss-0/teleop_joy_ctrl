@@ -32,7 +32,7 @@ buttons:
   right_shoulder: 5
   start: 7
   home: 8
-  right_stick: 10
+  # 右摇杆按下（R3，常见索引 10）不绑定功能。
 
 chassis:
   holonomic: false
@@ -102,9 +102,6 @@ light:
   send_brightness_when_off: false
 
 video:
-  enabled: true
-  double_click_interval: 0.4
-  long_press_duration: 1.5
   # 含 mvs 的 catkin 工作空间。留空时按以下顺序解析：
   # launch 参数 camera_workspace、环境变量 TELEOP_CAMERA_WORKSPACE、
   # rospack find mvs 所在工作空间、已编译的 ~/catkin_ws。
@@ -134,13 +131,12 @@ video:
   detector_ready_timeout: 30.0
   # NoMachine/本地图形终端下保留YOLO预览窗口；无显示终端改为 true。
   detector_headless: false
-  # 手动启动 camera_stream 与 yolo_detector.py --save-video 后，允许R3接管其录像服务。
+  # 手动启动 camera_stream 与 yolo_detector.py --save-video 后，允许录像服务接管该会话。
   adopt_existing_detector: true
-  # Must exceed the YOLO FFmpeg finalization timeout during an R3 long-press stop.
+  # Must exceed the YOLO FFmpeg finalization timeout when stop is called.
   detector_service_timeout: 45.0
   detector_shutdown_service: /yolo_detector_node/recording/shutdown
   detector_exit_timeout: 12.0
-  manager_command_timeout: 60.0
   process_stop_timeout: 5.0
   cleanup_stale_recording_nodes: true
   stale_node_cleanup_timeout: 5.0

@@ -3,11 +3,12 @@
 
 """手柄意图执行。
 
-限速、Twist、相机、光源、机械臂和录像都在这里完成。同进程路径用 apply()
+限速、Twist、相机、光源和机械臂都在这里完成。同进程路径用 apply()
 一次送入解析结果。两个节点时，执行器入口用 apply_chassis() 和
 apply_event_message()：轴夹到 [-1, 1]，报文时间只用来丢掉超前或过期的包，
 存活时间以本机接收时钟为准。离散事件还要带会话和递增序号，重复包和旧会话
 不会再次执行。锁定以执行器为准，锁定期间模式、HOME 和调参直接丢弃。
+右摇杆按下不再进入本模块，类型为 r3 的事件直接忽略。
 
 机械臂的 wait_for_service 与同步调用集中在 ArmServiceGateway，底盘发布循环
 不进入这个类。执行器节点调用 start_arm_worker() 后，连接和 START 在后台线程
@@ -28,10 +29,8 @@ from teleop_joy_ctrl.joy_parser import (
     EVENT_HOME,
     EVENT_LOCK,
     EVENT_MODE,
-    EVENT_R3,
     EVENT_START,
     ChassisIntent,
-    R3_SYNC,
     SPEED_GEAR_HIGH,
     SPEED_GEAR_LOW,
     TARGET_ANGULAR_SPEED,
@@ -50,104 +49,10 @@ MODE_SINGLE_MOVE = 8
 MODE_ERROR = 9
 MODE_COLLISION = 11
 
-VIDEO_IDLE = 'IDLE'
-VIDEO_STARTING = 'STARTING'
-VIDEO_RECORDING = 'RECORDING'
-VIDEO_PAUSED = 'PAUSED'
-VIDEO_STOPPING = 'STOPPING'
-VIDEO_ERROR = 'ERROR'
-
-VIDEO_COMMAND_START = 'start'
-VIDEO_COMMAND_PAUSE = 'pause'
-VIDEO_COMMAND_RESUME = 'resume'
-VIDEO_COMMAND_STOP = 'stop'
-
 # 报文时间最多比本机接收时间超前这么多，避免把时钟抖动当成超前攻击。
 STAMP_FUTURE_SKEW = 0.05
 _LOCK_GATED_EVENTS = (EVENT_MODE, EVENT_HOME, EVENT_ADJUST)
 _RETIRED_EVENT_SESSIONS = 8
-
-
-class R3GestureInterpreter(object):
-    """录像状态机：把按下/时间解释成开始、暂停、继续或结束。
-
-    解析器只报告手势相位。是否双击开始、短按暂停或长按结束，由这里结合
-    当前录像状态决定。
-    """
-
-    def __init__(self, double_click_interval, long_press_duration):
-        self.double_click_interval = float(double_click_interval)
-        self.long_press_duration = float(long_press_duration)
-        self.was_pressed = False
-        self.press_started_at = 0.0
-        self.long_press_fired = False
-        self.pending_idle_click_at = None
-        self.double_click_fired_for_press = False
-
-    def reset(self, pressed, now):
-        self.was_pressed = bool(pressed)
-        self.press_started_at = float(now)
-        self.long_press_fired = False
-        self.pending_idle_click_at = None
-        self.double_click_fired_for_press = False
-
-    def update(self, pressed, now, recording_state):
-        pressed = bool(pressed)
-        now = float(now)
-        events = []
-        active = recording_state in (VIDEO_RECORDING, VIDEO_PAUSED)
-        idle_like = recording_state in (VIDEO_IDLE, VIDEO_ERROR)
-
-        if (
-                idle_like
-                and self.pending_idle_click_at is not None
-                and now - self.pending_idle_click_at > self.double_click_interval):
-            self.pending_idle_click_at = None
-
-        if pressed and not self.was_pressed:
-            self.press_started_at = now
-            self.long_press_fired = False
-            self.double_click_fired_for_press = False
-            if (
-                    idle_like
-                    and self.pending_idle_click_at is not None
-                    and now - self.pending_idle_click_at
-                    <= self.double_click_interval):
-                self.pending_idle_click_at = None
-                self.double_click_fired_for_press = True
-                events.append(VIDEO_COMMAND_START)
-
-        if (
-                pressed
-                and self.was_pressed
-                and active
-                and not self.long_press_fired
-                and now - self.press_started_at >= self.long_press_duration):
-            self.long_press_fired = True
-            self.pending_idle_click_at = None
-            events.append(VIDEO_COMMAND_STOP)
-
-        if not pressed and self.was_pressed:
-            held_for = now - self.press_started_at
-            if (
-                    active
-                    and not self.long_press_fired
-                    and held_for >= self.long_press_duration):
-                self.long_press_fired = True
-                events.append(VIDEO_COMMAND_STOP)
-            elif self.long_press_fired:
-                pass
-            elif self.double_click_fired_for_press:
-                pass
-            elif recording_state == VIDEO_RECORDING:
-                events.append(VIDEO_COMMAND_PAUSE)
-            elif recording_state == VIDEO_PAUSED:
-                events.append(VIDEO_COMMAND_RESUME)
-            elif idle_like and held_for < self.long_press_duration:
-                self.pending_idle_click_at = now
-
-        self.was_pressed = pressed
-        return events
 
 
 class ArmServiceGateway(object):
@@ -227,7 +132,6 @@ class TeleopExecutor(object):
             camera=None,
             light=None,
             arm=None,
-            video=None,
             joy_timeout=0.5,
             debug_success_logs=True,
             chassis_debug_interval=1.0,
@@ -245,7 +149,6 @@ class TeleopExecutor(object):
         self.camera = camera if camera is not None else {}
         self.light = light if light is not None else {}
         self.arm = arm if arm is not None else {}
-        self.video = video if video is not None else {}
 
         self.joy_timeout = float(joy_timeout)
         self.debug_success_logs = bool(debug_success_logs)
@@ -293,24 +196,6 @@ class TeleopExecutor(object):
         self._event_seq = 0
         self._retired_event_sessions = []
 
-        self.video_enabled = bool(self.video.get('enabled', True))
-        self.video_state = VIDEO_IDLE
-        self.video_input_state = VIDEO_IDLE
-        self.video_gesture = R3GestureInterpreter(
-            self.video.get('double_click_interval', 0.4),
-            self.video.get('long_press_duration', 1.5))
-        self.video_command_queue = queue.Queue(maxsize=8)
-        self.video_worker_stop = threading.Event()
-        self.video_operation_lock = threading.Lock()
-        self.video_operation_pending = False
-        self.video_worker = None
-        self.video_clients = {}
-        self.video_service_names = {}
-        self.video_service_type = None
-        self.video_call_with_timeout = None
-        self.video_command_timeout = float(
-            self.video.get('manager_command_timeout', 35.0))
-
         self._arm_async = False
         self._arm_queue = None
         self._arm_worker_stop = None
@@ -356,11 +241,6 @@ class TeleopExecutor(object):
             self.camera.get('gain_state_topic', '/camera/gain_state'),
             Float32,
             self.gain_state_callback,
-            queue_size=1)
-        rospy.Subscriber(
-            self.video.get('state_topic', '/teleop_joy_ctrl/video/state'),
-            String,
-            self.video_state_callback,
             queue_size=1)
 
     def apply(self, result, now):
@@ -574,9 +454,9 @@ class TeleopExecutor(object):
             self._logwarn('手柄总控节点: 参数已锁定，已忽略事件=%s' % event_type)
             self.publish_state('锁定中忽略事件=%s' % event_type)
             return
-        if event_type == EVENT_R3:
-            self._handle_r3(event)
-        elif event_type == EVENT_LOCK:
+        if event_type == 'r3':
+            return
+        if event_type == EVENT_LOCK:
             self._handle_lock(event)
         elif event_type == EVENT_START:
             self._handle_start(event)
@@ -766,166 +646,6 @@ class TeleopExecutor(object):
     def is_light_off_by_brightness(self):
         epsilon = float(self.light.get('off_brightness_epsilon', 0.001))
         return self.brightness <= float(self.light.get('brightness_min', 0.0)) + epsilon
-
-    def _handle_r3(self, event):
-        if not self.video_enabled:
-            return
-
-        pressed = bool(event.get('pressed'))
-        when = float(event.get('time', 0.0))
-        if event.get('phase') == R3_SYNC:
-            self.video_gesture.reset(pressed, when)
-            return
-
-        commands = self.video_gesture.update(
-            pressed, when, self.video_input_state)
-        for command in commands:
-            with self.video_operation_lock:
-                if self.video_operation_pending:
-                    self._logwarn(
-                        '手柄总控节点: 录像操作仍在执行，已忽略R3操作=%s'
-                        % self.cn_video_command(command))
-                    continue
-                self.video_operation_pending = True
-            try:
-                self.video_command_queue.put_nowait(command)
-            except queue.Full:
-                with self.video_operation_lock:
-                    self.video_operation_pending = False
-                self._logwarn(
-                    '手柄总控节点: 录像指令队列已满，已忽略操作=%s'
-                    % self.cn_video_command(command))
-                continue
-
-            if command == VIDEO_COMMAND_START:
-                self.video_input_state = VIDEO_STARTING
-            elif command == VIDEO_COMMAND_PAUSE:
-                self.video_input_state = VIDEO_PAUSED
-            elif command == VIDEO_COMMAND_RESUME:
-                self.video_input_state = VIDEO_RECORDING
-            elif command == VIDEO_COMMAND_STOP:
-                self.video_input_state = VIDEO_STOPPING
-            self.log_success(
-                'R3录像指令已识别，操作=%s' % self.cn_video_command(command))
-
-    def video_state_callback(self, msg):
-        state = str(msg.data).strip().upper()
-        valid_states = (
-            VIDEO_IDLE,
-            VIDEO_STARTING,
-            VIDEO_RECORDING,
-            VIDEO_PAUSED,
-            VIDEO_STOPPING,
-            VIDEO_ERROR,
-        )
-        if state not in valid_states:
-            self._logwarn('手柄总控节点: 收到未知录像状态=%s' % state)
-            return
-        if state != self.video_state:
-            self.video_state = state
-            self.video_input_state = state
-            self.publish_state('录像状态更新=%s' % self.cn_video_state(state))
-
-    def init_video_clients(self):
-        if not self.video_enabled:
-            self._loginfo('手柄总控节点: 视频录制控制已通过参数关闭')
-            return
-
-        try:
-            from std_srvs.srv import Trigger
-            from teleop_joy_ctrl.video_process_manager import call_with_timeout
-        except ImportError as exc:
-            self.video_enabled = False
-            self.video_state = VIDEO_ERROR
-            self.video_input_state = VIDEO_ERROR
-            self._logerr(
-                '手柄总控节点: 无法导入std_srvs/Trigger，视频录制控制不可用，错误=%s'
-                % exc)
-            return
-
-        import rospy
-
-        service_names = {
-            VIDEO_COMMAND_START: self.video.get(
-                'start_service', '/teleop_joy_ctrl/video/start'),
-            VIDEO_COMMAND_PAUSE: self.video.get(
-                'pause_service', '/teleop_joy_ctrl/video/pause'),
-            VIDEO_COMMAND_RESUME: self.video.get(
-                'resume_service', '/teleop_joy_ctrl/video/resume'),
-            VIDEO_COMMAND_STOP: self.video.get(
-                'stop_service', '/teleop_joy_ctrl/video/stop'),
-        }
-        self.video_service_names = service_names
-        self.video_service_type = Trigger
-        self.video_call_with_timeout = call_with_timeout
-        self.rebuild_video_clients()
-        self.video_worker = threading.Thread(
-            target=self.video_command_worker,
-            name='teleop_video_command_worker')
-        self.video_worker.daemon = True
-        self.video_worker.start()
-        rospy.on_shutdown(self.stop_video_worker)
-
-    def rebuild_video_clients(self):
-        if self.video_service_type is None:
-            return
-        import rospy
-        self.video_clients = {
-            command: rospy.ServiceProxy(name, self.video_service_type)
-            for command, name in self.video_service_names.items()
-        }
-
-    def video_command_worker(self):
-        import rospy
-        while (
-                not rospy.is_shutdown()
-                and not self.video_worker_stop.is_set()):
-            try:
-                command = self.video_command_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-
-            try:
-                client = self.video_clients.get(command)
-                if client is None:
-                    raise RuntimeError('录像服务客户端不存在')
-                completed, response, error = self.video_call_with_timeout(
-                    client,
-                    self.video_command_timeout,
-                )
-                if not completed:
-                    self.video_input_state = self.video_state
-                    self.rebuild_video_clients()
-                    self._logerr(
-                        '手柄总控节点: 录像服务调用超时=%s 超时=%.1fs' % (
-                            self.cn_video_command(command),
-                            self.video_command_timeout))
-                    self.publish_state('录像服务调用超时')
-                    continue
-                if error is not None:
-                    raise error
-                if response.success:
-                    self.log_success(str(response.message))
-                else:
-                    self.video_input_state = self.video_state
-                    self._logerr(
-                        '手柄总控节点: 录像操作失败=%s 原因=%s' % (
-                            self.cn_video_command(command),
-                            response.message))
-            except Exception as exc:
-                self.video_input_state = self.video_state
-                self._logerr(
-                    '手柄总控节点: 录像服务调用异常=%s 错误=%s' % (
-                        self.cn_video_command(command),
-                        exc))
-                self.publish_state('录像服务调用异常')
-            finally:
-                with self.video_operation_lock:
-                    self.video_operation_pending = False
-                self.video_command_queue.task_done()
-
-    def stop_video_worker(self):
-        self.video_worker_stop.set()
 
     def init_arm_clients(self, wait_slice=None, should_stop=None):
         if not self.arm_config_enabled:
@@ -1138,7 +858,7 @@ class TeleopExecutor(object):
     def publish_state(self, text):
         state = (
             '事件=%s 锁定=%s 当前模式=%s 线速度上限=%.3f 角速度上限=%.3f '
-            '曝光=%.1f 增益=%.3f 光源=%s 亮度=%.2f 录像=%s'
+            '曝光=%.1f 增益=%.3f 光源=%s 亮度=%.2f'
             % (
                 text,
                 self.cn_bool(self.locked),
@@ -1149,7 +869,6 @@ class TeleopExecutor(object):
                 self.gain,
                 '开启' if self.light_on else '关闭',
                 self.brightness,
-                self.cn_video_state(self.video_state),
             )
         )
         if self.state_pub is not None:
@@ -1229,25 +948,3 @@ class TeleopExecutor(object):
             ACTIVE_MODE_LIGHT: '光源亮度',
         }
         return names.get(mode, mode)
-
-    @staticmethod
-    def cn_video_state(state):
-        names = {
-            VIDEO_IDLE: '空闲',
-            VIDEO_STARTING: '启动中',
-            VIDEO_RECORDING: '录制中',
-            VIDEO_PAUSED: '已暂停',
-            VIDEO_STOPPING: '结束中',
-            VIDEO_ERROR: '故障',
-        }
-        return names.get(state, state)
-
-    @staticmethod
-    def cn_video_command(command):
-        names = {
-            VIDEO_COMMAND_START: '开始',
-            VIDEO_COMMAND_PAUSE: '暂停',
-            VIDEO_COMMAND_RESUME: '继续',
-            VIDEO_COMMAND_STOP: '结束',
-        }
-        return names.get(command, command)

@@ -40,7 +40,6 @@ class TeleopExecutorNode(object):
             camera=rospy.get_param('~camera', {}),
             light=rospy.get_param('~light', {}),
             arm=rospy.get_param('~arm', {}),
-            video=rospy.get_param('~video', {}),
             joy_timeout=joy_timeout,
             debug_success_logs=debug_success_logs,
             chassis_debug_interval=chassis_debug_interval,
@@ -49,7 +48,6 @@ class TeleopExecutorNode(object):
             debug_topic=self.debug_topic,
         )
         self.executor.bind_ros_interfaces()
-        self.executor.init_video_clients()
         self.executor.start_arm_worker()
         rospy.on_shutdown(self.executor.stop_arm_worker)
         self.executor.publish_state('执行器节点已启动')

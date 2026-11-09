@@ -16,7 +16,8 @@
 - 光源开关和亮度调节；
 - 手柄参数锁定；
 - 手柄控制与自主导航之间的自动切换。
-- R3 三路视频录制、暂停、继续与安全结束。
+
+右摇杆按下（R3）不控制录像，也不会发出录像相关意图。
 
 手柄输入话题默认为 `/joy_teleop/joy`。手柄小车速度发布到 `/teleop_joy_ctrl/cmd_vel`，经接管用 `twist_mux` 输出到 `/bulldog_velocity_controller/cmd_vel`。
 
@@ -81,7 +82,7 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
 | 右肩键 RB | button 5 | 高速小车控制使能 |
 | START | button 7 | 机械臂状态控制 |
 | HOME | button 8 | 光源开关 |
-| 右摇杆按下 R3 | button 10 | 双击开始录像；短按暂停/继续；长按结束 |
+| 右摇杆按下 R3 | button 10 | 不使用，不开始、暂停或结束录像 |
 | BACK | 未绑定 | 预留，不执行任何操作 |
 
 如更换手柄，必须先用下面的命令重新核对索引：
@@ -284,7 +285,6 @@ HOME 通过两个 ROS 话题驱动串口节点，不是只修改总控节点内�
 | LT + 方向键调参 | 不可用 |
 | HOME 光源开关 | 不可用 |
 | START 机械臂控制 | 仍可用 |
-| R3 录像控制 | 仍可用 |
 
 ## 12. 终端状态和调试输出
 
@@ -399,29 +399,29 @@ rostopic echo /camera/gain_cmd
 
 ## 15. 默认混合解耦录像
 
-当前默认 R3 后端为 `hybrid_video_recorder`，由三个独立节点组成：
+手柄 R3 不再开始、暂停或结束录像。默认仍可启动 `hybrid_video_recorder`，供其他调用方使用，由三个独立节点组成：
 
 - `hybrid_video_recorder/raw`：持续订阅 `/camera/image_raw`，录制与暂停期间均写入原始视频。
 - `hybrid_video_recorder/aimed`：持续订阅同一话题，仅在“录制中”写入 aimed 视频。
 - `video_recording_manager_node`：保持原有 `/teleop_joy_ctrl/video/*` 服务，协调两个写入节点。
 
-相机 `camera_stream` 不再由 R3 启动或结束，必须作为独立进程先启动：
+相机 `camera_stream` 不由手柄启动或结束，必须作为独立进程先启动：
 
 ```bash
 source ~/catkin_ws/devel/setup.bash
 rosrun mvs camera_stream
 ```
 
-空闲状态双击 R3 后，管理器在同一时间戳目录中创建：
+其他调用方开始录像后，管理器在同一时间戳目录中创建：
 
 ```text
 <时间戳>.mp4
 aimed_<时间戳>.mp4
 ```
 
-短按 R3 暂停时，两个工作节点保持图像订阅不断开：原始视频继续写入，aimed 视频停止写入；再次短按后 aimed 继续写入同一文件。长按 R3 至少 `1.5 s` 时，两个独立 FFmpeg 写入器分别封装。aimed 写入或 YOLO 检测失败不会取消原始视频保存。
+暂停时，两个工作节点保持图像订阅不断开：原始视频继续写入，aimed 视频停止写入；继续后 aimed 写入同一文件。结束时，两个独立 FFmpeg 写入器分别封装。aimed 写入或 YOLO 检测失败不会取消原始视频保存。这些动作不由 R3 触发。
 
-YOLO 是此模式下的独立可选进程，不再能够阻断 R3 的数据保底录像。需要临时回退旧版 YOLO 耦合录像时，使用：
+YOLO 是此模式下的独立可选进程，不会阻断原始视频保存。需要临时回退旧版 YOLO 耦合录像时，使用：
 
 ```bash
 roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
@@ -431,12 +431,11 @@ roslaunch teleop_joy_ctrl teleop_joy_ctrl.launch \
 
 ## 16. 旧版 YOLO 耦合录像回退
 
-R3 已实测对应 `/joy_teleop/joy` 的 `buttons[10]`。录像控制在 X
-锁定状态下仍然有效，确保现场人员始终能够暂停或安全结束录像。
+右摇杆按下在 `/joy_teleop/joy` 上仍是 `buttons[10]`，但总控不再读取该按键。录像不随 X 锁定变化，因为手柄已不再控制录像。其他调用方仍可使用 `/teleop_joy_ctrl/video/start`、`pause`、`resume` 和 `stop`。
 
 ### 15.1 开始录像
 
-空闲状态下双击 R3，两次短按的间隔不得超过 `0.4 s`。录像管理节点会：
+调用 `/teleop_joy_ctrl/video/start` 后，录像管理节点会：
 
 1. 从相机工作空间启动 `mvs camera_stream`。工作空间按 launch 参数 `camera_workspace`、`video.camera_workspace`、环境变量 `TELEOP_CAMERA_WORKSPACE`、`rospack find mvs` 所在工作空间、已编译的 `~/catkin_ws` 的顺序解析。
 2. 等待 `/camera/image_raw` 就绪。
@@ -444,19 +443,19 @@ R3 已实测对应 `/joy_teleop/joy` 的 `buttons[10]`。录像控制在 X
    `default.yaml` 中的 `video.detector_headless` 改为 `true`。
 4. 等待 YOLO 录像服务就绪，然后进入 `RECORDING` 状态。
 
-启动 `teleop_joy_ctrl.launch` 时只会启动录像管理节点，不会立即占用相机
-或启动 YOLO。空闲状态单击或长按 R3 不执行录像操作。
+启动 `teleop_joy_ctrl.launch` 时只会按参数启动录像相关节点，不会立即占用相机
+或启动 YOLO。按下 R3 不执行录像操作。
 
 ### 15.2 暂停与继续
 
-- `RECORDING` 状态短按 R3：暂停 `aimed_<时间戳>.mp4` 的原始帧写入。
-- `PAUSED` 状态短按 R3：继续写入同一个 `aimed_<时间戳>.mp4` 文件。
+- `RECORDING` 状态调用 `/teleop_joy_ctrl/video/pause`：暂停 `aimed_<时间戳>.mp4` 的原始帧写入。
+- `PAUSED` 状态调用 `/teleop_joy_ctrl/video/resume`：继续写入同一个 `aimed_<时间戳>.mp4` 文件。
 - 暂停期间相机采集、YOLO 推理、原始连续视频和带识别框视频继续写入；仅 aimed 视频跳过暂停区间。
 - 录制或暂停状态不识别双击，因此快速短按不会被判定为结束录像。
 
 ### 15.3 结束并关闭节点
 
-在 `RECORDING` 或 `PAUSED` 状态长按 R3 至少 `1.5 s`：
+在 `RECORDING` 或 `PAUSED` 状态调用 `/teleop_joy_ctrl/video/stop`：
 
 1. 禁止新录像帧入队并排空待写队列。
 2. 关闭两个 FFmpeg 写入器并完成 MP4 封装。
@@ -466,10 +465,10 @@ R3 已实测对应 `/joy_teleop/joy` 的 `buttons[10]`。录像控制在 X
 
 自动模式下，管理节点会关闭自己启动的相机和 YOLO 进程。若相机和 YOLO 在启动总控前
 已由人工启动，且 `video.adopt_existing_detector: true`，管理节点会检查相机图像话题、
-YOLO 录像服务和录像状态；检查通过后，下一次空闲状态双击 R3 会接管现有录像会话，
+YOLO 录像服务和录像状态；检查通过后，下一次 start 会接管现有录像会话，
 不会重新启动第二个 YOLO 进程。
 
-手动接管模式下，R3 的暂停、继续和结束仍然有效；但长按结束只完成录像封装，不会关闭
+手动接管模式下，pause、resume 和 stop 仍然有效；但 stop 只完成录像封装，不会关闭
 人工启动的进程。结束后按下面命令完全退出：
 
 ```bash
@@ -524,7 +523,7 @@ MVS 文件放入相机工作空间的 `src/mvs`（例如 `~/catkin_ws/src/mvs`�
 - 光源启动状态是配置假定值，不是硬件回读值。
 - START 在锁定状态下仍可控制机械臂。
 - BACK 尚未绑定功能。
-- R3 录像功能依赖 detection Python、FFmpeg 和足够的磁盘空间；自动拉起 YOLO 失败时可使用第 15 节的手动接管流程。
+- 手柄 R3 不控制录像。旧版录像服务仍依赖 detection Python、FFmpeg 和足够的磁盘空间；自动拉起 YOLO 失败时可使用第 15 节的手动接管流程。
 - 视频全黑通常表示输入画面亮度不足，而非 FFmpeg 封装失败；先检查光源、曝光和增益。
 - 更换手柄、驱动或系统后，axes/buttons 索引可能改变，必须重新测试。
 - 本说明书依据 2026-07-27 当前代码和 `default.yaml` 编写；后续修改控制逻辑时应同步更新。

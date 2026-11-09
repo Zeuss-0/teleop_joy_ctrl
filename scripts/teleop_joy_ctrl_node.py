@@ -7,36 +7,12 @@ import rospy
 from sensor_msgs.msg import Joy
 
 from teleop_joy_ctrl.joy_parser import JoyParser, clamp
-from teleop_joy_ctrl.teleop_executor import (
-    R3GestureInterpreter,
-    TeleopExecutor,
-    VIDEO_COMMAND_PAUSE,
-    VIDEO_COMMAND_RESUME,
-    VIDEO_COMMAND_START,
-    VIDEO_COMMAND_STOP,
-    VIDEO_ERROR,
-    VIDEO_IDLE,
-    VIDEO_PAUSED,
-    VIDEO_RECORDING,
-    VIDEO_STARTING,
-    VIDEO_STOPPING,
-)
+from teleop_joy_ctrl.teleop_executor import TeleopExecutor
 
 __all__ = [
     'JoyParser',
-    'R3GestureInterpreter',
     'TeleopExecutor',
     'TeleopJoyCtrl',
-    'VIDEO_COMMAND_PAUSE',
-    'VIDEO_COMMAND_RESUME',
-    'VIDEO_COMMAND_START',
-    'VIDEO_COMMAND_STOP',
-    'VIDEO_ERROR',
-    'VIDEO_IDLE',
-    'VIDEO_PAUSED',
-    'VIDEO_RECORDING',
-    'VIDEO_STARTING',
-    'VIDEO_STOPPING',
 ]
 
 
@@ -72,7 +48,6 @@ class TeleopJoyCtrl(object):
             camera=rospy.get_param('~camera', {}),
             light=rospy.get_param('~light', {}),
             arm=rospy.get_param('~arm', {}),
-            video=rospy.get_param('~video', {}),
             joy_timeout=joy_timeout,
             debug_success_logs=debug_success_logs,
             chassis_debug_interval=chassis_debug_interval,
@@ -81,7 +56,6 @@ class TeleopJoyCtrl(object):
             debug_topic=self.debug_topic,
         )
         self.executor.bind_ros_interfaces()
-        self.executor.init_video_clients()
         self.executor.init_arm_clients()
         self.executor.publish_state('节点已启动')
 

@@ -46,7 +46,6 @@ def make_executor(was_active=False):
         camera={},
         light={"enabled": False},
         arm={"enabled": False},
-        video={"enabled": False},
         joy_timeout=0.5,
         debug_success_logs=False,
         publishers={"cmd_vel": RecordingPublisher()},

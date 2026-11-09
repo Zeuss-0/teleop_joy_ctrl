@@ -17,15 +17,15 @@
 
 离散事件话题 ``/teleop_joy_ctrl/events``（std_msgs/String，不锁存）。
 一帧里的事件放在同一条消息的 ``events`` 数组里，顺序与解析器一致
-（R3、锁定、START、模式、HOME、调参）。报头带 ``session``、``seq`` 和
+（锁定、START、模式、HOME、调参）。报头带 ``session``、``seq`` 和
 ``time``。意图节点每次启动使用新的 ``session``，``seq`` 从 1 递增::
 
     {"time": 12.5, "seq": 3, "session": "intent-session", "events": [
         {"type": "adjust", "target": "exposure", "direction": 1}
     ]}
 
-纯 R3 idle 且没有其他事件时可以不发；press/hold/release/sync 必须发，
-长按结束依赖按住期间的 hold 采样。
+没有离散事件时不发。类型为 ``r3`` 的事件一律丢弃，右摇杆按下不再
+进入意图话题。
 """
 
 import json
@@ -147,23 +147,30 @@ def decode_events(text):
     return EventMessage(cleaned, stamp, seq, session)
 
 
-def frame_has_discrete_content(events):
-    """纯 R3 idle 不算需要发布的离散帧。"""
+def publishable_events(events):
+    """丢掉右摇杆录像事件。其余事件保持原顺序。"""
+    kept = []
     for event in events or []:
-        if not isinstance(event, dict):
+        if isinstance(event, dict) and event.get('type') == 'r3':
             continue
-        if event.get('type') != 'r3':
-            return True
-        if event.get('phase') != 'idle':
+        kept.append(event)
+    return kept
+
+
+def frame_has_discrete_content(events):
+    """没有可发布的离散事件时返回 False。``r3`` 不算。"""
+    for event in publishable_events(events):
+        if isinstance(event, dict):
             return True
     return False
 
 
 def events_message(events, now, seq, session=None):
-    """需要发布时返回 JSON，否则返回 None。"""
-    if not frame_has_discrete_content(events):
+    """需要发布时返回 JSON，否则返回 None。``r3`` 事件不会出现在报文里。"""
+    kept = publishable_events(events)
+    if not frame_has_discrete_content(kept):
         return None
-    return encode_events(events, now, seq=seq, session=session)
+    return encode_events(kept, now, seq=seq, session=session)
 
 
 def _axis_value(payload, name):

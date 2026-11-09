@@ -16,13 +16,8 @@ from teleop_joy_ctrl.joy_parser import (
     EVENT_HOME,
     EVENT_LOCK,
     EVENT_MODE,
-    EVENT_R3,
     EVENT_START,
     JoyParser,
-    R3_HOLD,
-    R3_PRESS,
-    R3_RELEASE,
-    R3_SYNC,
     SPEED_GEAR_HIGH,
     SPEED_GEAR_LOW,
     SPEED_GEAR_NONE,
@@ -30,14 +25,7 @@ from teleop_joy_ctrl.joy_parser import (
     TARGET_GAIN,
     TARGET_LINEAR_SPEED,
 )
-from teleop_joy_ctrl.teleop_executor import (
-    R3GestureInterpreter,
-    VIDEO_COMMAND_PAUSE,
-    VIDEO_COMMAND_STOP,
-    VIDEO_PAUSED,
-    VIDEO_RECORDING,
-    TeleopExecutor,
-)
+from teleop_joy_ctrl.teleop_executor import TeleopExecutor
 
 
 BUTTONS = {
@@ -125,8 +113,8 @@ def event_types(result):
     return [event["type"] for event in result.events]
 
 
-def non_r3(result):
-    return [event for event in result.events if event["type"] != EVENT_R3]
+def event_list(result):
+    return list(result.events)
 
 
 class StepASplitTest(unittest.TestCase):
@@ -196,11 +184,6 @@ class StepASplitTest(unittest.TestCase):
                 "brightness_topic": "/light/brightness_cmd",
             },
             arm={"enabled": False},
-            video={
-                "enabled": True,
-                "double_click_interval": 0.4,
-                "long_press_duration": 1.5,
-            },
             joy_timeout=0.5,
             debug_success_logs=True,
             chassis_debug_interval=1.0,
@@ -263,9 +246,13 @@ class StepASplitTest(unittest.TestCase):
         self.assertEqual(1.0, released.chassis.left_y)
 
     def test_held_button_on_first_sample_is_not_an_edge(self):
-        result = self.feed(10.0, make_buttons(x=True, a=True, home=True), make_axes())
-        self.assertEqual([EVENT_R3], event_types(result))
-        self.assertEqual(R3_SYNC, result.events[0]["phase"])
+        result = self.feed(
+            10.0,
+            make_buttons(x=True, a=True, home=True, right_stick=True),
+            make_axes(),
+        )
+        self.assertEqual([], event_types(result))
+        self.assertFalse(any(event.get("type") == "r3" for event in result.events))
         self.assertFalse(self.parser.locked)
         self.assertEqual("none", self.parser.active_mode)
 
@@ -286,7 +273,7 @@ class StepASplitTest(unittest.TestCase):
             make_axes(left_y=1.0, left_trigger=-1.0, dpad_y=1.0),
             publish=True,
         )
-        adjust_events = [event for event in non_r3(adjusted) if event["type"] == EVENT_ADJUST]
+        adjust_events = [event for event in event_list(adjusted) if event["type"] == EVENT_ADJUST]
         self.assertEqual(
             [{"type": EVENT_ADJUST, "target": TARGET_LINEAR_SPEED, "direction": 1}],
             adjust_events,
@@ -300,7 +287,7 @@ class StepASplitTest(unittest.TestCase):
             make_axes(left_y=1.0, left_trigger=-1.0, dpad_y=1.0),
             publish=True,
         )
-        self.assertEqual([], [event for event in non_r3(blocked) if event["type"] == EVENT_ADJUST])
+        self.assertEqual([], [event for event in event_list(blocked) if event["type"] == EVENT_ADJUST])
         self.assertAlmostEqual(0.44, self.executor.max_linear_speed)
 
         centered = self.feed(
@@ -358,7 +345,7 @@ class StepASplitTest(unittest.TestCase):
             make_buttons(b=True),
             make_axes(left_trigger=-1.0, dpad_x=-1.0, dpad_y=1.0),
         )
-        payload = non_r3(switched)
+        payload = event_list(switched)
         self.assertEqual(EVENT_MODE, payload[0]["type"])
         self.assertEqual("camera", payload[0]["mode"])
         self.assertEqual(
@@ -383,7 +370,7 @@ class StepASplitTest(unittest.TestCase):
             make_buttons(a=True),
             make_axes(left_trigger=-1.0, dpad_y=1.0),
         )
-        payload = non_r3(selected)
+        payload = event_list(selected)
         self.assertEqual(
             [EVENT_MODE, EVENT_ADJUST],
             [event["type"] for event in payload],
@@ -404,7 +391,7 @@ class StepASplitTest(unittest.TestCase):
             make_buttons(),
             make_axes(left_trigger=-1.0, dpad_x=1.0),
         )
-        adjust_events = [event for event in non_r3(adjusted) if event["type"] == EVENT_ADJUST]
+        adjust_events = [event for event in event_list(adjusted) if event["type"] == EVENT_ADJUST]
         self.assertEqual(
             [{"type": EVENT_ADJUST, "target": "angular_speed", "direction": -1}],
             adjust_events,
@@ -415,8 +402,8 @@ class StepASplitTest(unittest.TestCase):
         self.boot(10.0)
         self.feed(10.2, make_buttons(a=True), make_axes())
         locked = self.feed(10.3, make_buttons(x=True), make_axes())
-        self.assertEqual([EVENT_LOCK], [event["type"] for event in non_r3(locked)])
-        self.assertTrue(locked.events[1]["locked"])
+        self.assertEqual([EVENT_LOCK], [event["type"] for event in event_list(locked)])
+        self.assertTrue(locked.events[0]["locked"])
         self.assertEqual("none", self.parser.active_mode)
         self.assertTrue(self.executor.locked)
         self.assertEqual("none", self.executor.active_mode)
@@ -427,7 +414,7 @@ class StepASplitTest(unittest.TestCase):
             make_axes(left_y=1.0, left_trigger=-1.0, dpad_y=1.0),
             publish=True,
         )
-        payload = non_r3(while_locked)
+        payload = event_list(while_locked)
         self.assertEqual([EVENT_START], [event["type"] for event in payload])
         self.assertEqual(7, payload[0]["index"])
         self.assertTrue(while_locked.chassis.active)
@@ -448,7 +435,7 @@ class StepASplitTest(unittest.TestCase):
         self.assertEqual("chassis", self.parser.active_mode)
         self.assertEqual(
             [EVENT_LOCK, EVENT_MODE, EVENT_ADJUST],
-            [event["type"] for event in non_r3(same_frame_lock)],
+            [event["type"] for event in event_list(same_frame_lock)],
         )
         self.assertAlmostEqual(0.44, self.executor.max_linear_speed)
 
@@ -461,42 +448,38 @@ class StepASplitTest(unittest.TestCase):
         )
         self.assertTrue(self.parser.locked)
         self.assertEqual("none", self.parser.active_mode)
-        self.assertEqual([EVENT_LOCK], [event["type"] for event in non_r3(locked)])
+        self.assertEqual([EVENT_LOCK], [event["type"] for event in event_list(locked)])
         self.assertAlmostEqual(0.4, self.executor.max_linear_speed)
 
-    def test_r3_busy_rejects_followup_without_dropping_gesture_samples(self):
-        self.executor.video_state = VIDEO_RECORDING
-        self.executor.video_input_state = VIDEO_RECORDING
+    def test_r3_gestures_do_not_emit_events_or_change_executor(self):
         self.boot(1.0)
-        press = self.feed(1.10, make_buttons(right_stick=True), make_axes())
-        self.assertEqual(R3_PRESS, press.events[0]["phase"])
-        self.assertTrue(press.events[0]["pressed"])
-        release = self.feed(1.20, make_buttons(), make_axes())
-        self.assertEqual(R3_RELEASE, release.events[0]["phase"])
-        self.assertFalse(release.events[0]["pressed"])
-
-        self.feed(1.30, make_buttons(right_stick=True), make_axes())
-        self.feed(1.40, make_buttons(), make_axes())
-
-        queued = list(self.executor.video_command_queue.queue)
-        self.assertEqual([VIDEO_COMMAND_PAUSE], queued)
-        self.assertEqual(VIDEO_RECORDING, self.executor.video_state)
-        self.assertEqual(VIDEO_PAUSED, self.executor.video_input_state)
-        self.assertTrue(self.executor.video_operation_pending)
-        self.assertTrue(any("已忽略R3操作=继续" in text for _level, text in self.logger.lines))
-
-    def test_r3_hold_sample_reaches_stop_while_button_stays_down(self):
-        self.executor.video_state = VIDEO_RECORDING
-        self.executor.video_input_state = VIDEO_RECORDING
-        self.boot(2.0)
-        self.feed(2.10, make_buttons(right_stick=True), make_axes())
-        held = self.feed(3.70, make_buttons(right_stick=True), make_axes())
-        self.assertEqual(R3_HOLD, held.events[0]["phase"])
-        self.assertGreaterEqual(held.events[0]["held_for"], 1.5)
-        self.assertEqual(
-            [VIDEO_COMMAND_STOP],
-            list(self.executor.video_command_queue.queue),
+        before = (
+            self.executor.max_linear_speed,
+            self.executor.max_angular_speed,
+            self.executor.light_on,
+            self.executor.brightness,
+            self.executor.locked,
         )
+        samples = (
+            (1.10, True),
+            (1.20, False),
+            (1.30, True),
+            (1.40, False),
+            (2.10, True),
+            (3.70, True),
+            (3.80, False),
+        )
+        for now, pressed in samples:
+            result = self.feed(now, make_buttons(right_stick=pressed), make_axes())
+            self.assertEqual([], event_types(result))
+        self.assertEqual(before[0], self.executor.max_linear_speed)
+        self.assertEqual(before[1], self.executor.max_angular_speed)
+        self.assertEqual(before[2], self.executor.light_on)
+        self.assertEqual(before[3], self.executor.brightness)
+        self.assertEqual(before[4], self.executor.locked)
+        self.assertFalse(hasattr(self.executor, "video_command_queue"))
+        self.assertFalse(hasattr(self.executor, "video_gesture"))
+        self.assertFalse(any("录像" in text or "R3" in text for _level, text in self.logger.lines))
 
     def test_home_write_order_uses_yaml_restore_brightness(self):
         self.boot(10.0)
@@ -568,6 +551,9 @@ class StepASplitTest(unittest.TestCase):
         self.assertNotIn("wait_for_service", node_source)
         self.assertIn("self.parser.update", node_source)
         self.assertIn("self.executor.apply", node_source)
+        self.assertNotIn("init_video_clients", node_source)
+        self.assertNotIn("R3GestureInterpreter", executor_source)
+        self.assertNotIn("right_stick", parser_source)
         self.assertEqual(1, launch_source.count("teleop_joy_ctrl_node.py"))
         self.assertNotIn("joy_parser", launch_source)
         self.assertIn("priority: 254", mux_source)
@@ -633,7 +619,7 @@ class StepASplitTest(unittest.TestCase):
             self.assertEqual(([0.2, 0.4], [1, 0], 12.5), seen["parsed"])
             self.assertEqual(("intent", 12.5), seen["applied"])
             self.assertEqual(12.5, seen["published"])
-            self.assertIs(module.R3GestureInterpreter, R3GestureInterpreter)
+            self.assertFalse(hasattr(module, "R3GestureInterpreter"))
         finally:
             if rospy is None:
                 sys.modules.pop("rospy", None)
