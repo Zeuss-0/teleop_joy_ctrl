@@ -70,6 +70,8 @@ arm:
   robot_namespace: ""
   service_prefix: /dobot_v4_bringup
   command_settle_time: 0.3
+  # RobotMode.mode 一直为 0 时，用 FeedInfo / RobotStatus。超过该秒数未更新则不再采信。
+  feedback_stale_time: 1.0
 
 light:
   enabled: true

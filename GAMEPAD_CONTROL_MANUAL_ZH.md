@@ -203,16 +203,25 @@ rostopic echo /joy_teleop/joy
 
 ## 9. 机械臂控制
 
-机械臂只使用 START 一个按键，根据当前 `RobotMode` 自动选择操作：
+机械臂只使用 START 一个按键，根据当前机械臂模式自动选择操作：
 
-| 当前 RobotMode | START 动作 |
+| 当前模式 | START 动作 |
 | --- | --- |
 | ERROR（9） | 调用 `ClearError` 清错 |
 | COLLISION（11） | 调用 `ClearError` 清错 |
 | ENABLE_IDLE（5） | 调用 `DisableRobot` 下使能 |
 | RUNNING（7） | 调用 `DisableRobot` 下使能 |
 | SINGLE_MOVE（8） | 调用 `DisableRobot` 下使能 |
-| 其他模式 | 调用 `EnableRobot` 上使能 |
+| 其他模式，包括未使能（4） | 调用 `EnableRobot` 上使能 |
+
+模式按下面顺序取第一个有效值：
+
+1. `RobotMode` 服务的 `mode`，且取值在 1–11。
+2. `/dobot_v4_bringup/msg/FeedInfo` JSON 里的 `robot_mode`（也认 `RobotMode`）。
+3. 同一条反馈的 `EnableStatus`：1 视为使能空闲（5），0 视为未使能（4）。
+4. `/dobot_v4_bringup/msg/RobotStatus` 的 `is_enable` 为真时视为使能空闲（5）。为假时不单独当成下使能。
+
+库存 `dobot_v4_bringup` 不填写 `mode`，只把 TCP 错误码放在 `res`。现场常见返回是 `mode: 0, res: 0`，这时总控忽略 `res`，改用上面的反馈。反馈超过 `arm.feedback_stale_time`（默认 1 秒）没有更新就不再采信。
 
 机械臂服务路径默认为：
 
@@ -229,7 +238,8 @@ rostopic echo /joy_teleop/joy
 - 当前默认 IP 是 `192.168.1.80`。
 - START 是边沿触发按键，每次操作需要松开后重新按下。
 - 当前代码中 START 在 X 锁定状态下仍然有效。
-- RobotMode 查询或服务调用失败时，以终端警告为准，不要连续快速按键。
+- `RobotMode` 查询失败时，只要 FeedInfo 仍在更新，START 仍按反馈里的模式动作。两边都没有有效模式时，以终端警告为准，不要连续快速按键。
+- 上使能成功后应看到“执行后模式=5”（或 7/8）。若提示“未确认进入使能态”且模式一直是 0，先看 FeedInfo 是否在发布，不要只看 `RobotMode.res`。
 
 ## 10. 光源控制
 
@@ -338,10 +348,15 @@ rostopic echo /bulldog_velocity_controller/cmd_vel
 
 ```bash
 rosservice list | grep -E 'RobotMode|EnableRobot|DisableRobot|ClearError'
+rosservice call /dobot_v4_bringup/srv/RobotMode "{}"
+rostopic echo -n 1 /dobot_v4_bringup/msg/FeedInfo
+rostopic echo -n 1 /dobot_v4_bringup/msg/RobotStatus
 ping -c 3 192.168.1.80
 nc -vz -w 3 192.168.1.80 29999
 nc -vz -w 3 192.168.1.80 30004
 ```
+
+`RobotMode` 返回 `mode: 0` 时，以 FeedInfo 的 `robot_mode` 和 `EnableStatus` 为准。使能时空闲一般为 `robot_mode` 5、`EnableStatus` 1；下使能后一般为 `robot_mode` 4、`EnableStatus` 0。
 
 ### 13.4 检查光源
 
@@ -383,7 +398,8 @@ rostopic echo /camera/gain_cmd
 2. 确认已加载 `test_ws` 和 `moma_ws`。
 3. 确认四个 Dobot 服务存在。
 4. 检查 `192.168.1.80:29999` 和 `192.168.1.80:30004`。
-5. 查看终端中的 RobotMode 和服务调用警告。
+5. 查看终端中的模式来源和服务调用警告。`mode` 为 0 时确认 FeedInfo 的 `robot_mode` 是否在变。
+6. 使能成功后再按一次 START，应改为下使能。若第二次仍然上使能，说明总控仍把未使能当成当前状态。
 
 ### HOME 无法控制光源
 
