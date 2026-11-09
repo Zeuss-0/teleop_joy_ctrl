@@ -556,6 +556,9 @@ class StepASplitTest(unittest.TestCase):
         self.assertNotIn("right_stick", parser_source)
         self.assertEqual(1, launch_source.count("teleop_joy_ctrl_node.py"))
         self.assertNotIn("joy_parser", launch_source)
+        self.assertNotIn("video_recording_manager", launch_source)
+        self.assertNotIn("hybrid_video", launch_source)
+        self.assertNotIn("start_video_manager", launch_source)
         self.assertIn("priority: 254", mux_source)
 
     def test_node_callback_forwards_one_joy_sample(self):

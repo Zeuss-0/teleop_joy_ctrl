@@ -8,16 +8,8 @@
 
   <arg name="start_arm_bringup" default="false" />
   <arg name="start_light_controller" default="true" />
-  <arg name="start_video_manager" default="true" />
-  <arg name="start_hybrid_video_manager" default="true" />
-  <arg name="start_legacy_video_manager" default="false" />
-  <!-- Legacy recording only. Empty keeps YAML, env, and discovery resolution. -->
-  <arg name="camera_workspace" default="" />
-  <arg name="python_executable" default="" />
   <!-- Same-process node is the default. Set legacy_single_node:=false for the two-node path. -->
   <arg name="legacy_single_node" default="true" />
-  
-  <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
   <arg name="start_takeover_mux" default="true" />
   <arg name="restore_system_teleop_on_shutdown" default="true" />
   <arg name="system_teleop_package" default="robot_driver" />
@@ -76,27 +68,6 @@
     <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
     <param name="arm/robot_namespace" value="$(arg robot_namespace)" />
   </node>
-
-  <group if="$(arg start_video_manager)">
-   <!-- 下面的 -->
-    <include if="$(arg start_hybrid_video_manager)" 
-             file="$(find hybrid_video_recorder)/launch/hybrid_video_recorder.launch">
-      <arg name="config" value="$(arg hybrid_video_config)" />
-    </include>
-
-    <!-- Set start_hybrid_video_manager:=false and start_legacy_video_manager:=true to roll back. -->
-    <group if="$(arg start_legacy_video_manager)">
-      <node unless="$(arg start_hybrid_video_manager)"
-            pkg="teleop_joy_ctrl"
-            type="video_recording_manager_node.py"
-            name="video_recording_manager_node"
-            output="screen">
-        <rosparam command="load" file="$(arg config)" />
-        <param name="camera_workspace" value="$(arg camera_workspace)" />
-        <param name="python_executable" value="$(arg python_executable)" />
-      </node>
-    </group>
-  </group>
 
   <node if="$(arg start_light_controller)"
         pkg="teleop_joy_ctrl"

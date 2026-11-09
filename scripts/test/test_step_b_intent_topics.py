@@ -588,8 +588,18 @@ class StepBIntentTopicTest(unittest.TestCase):
         self.assertIn("legacy_single_node:=false", launch)
         self.assertEqual(1, launch.count("teleop_joy_ctrl_node.py"))
         self.assertNotIn("joy_parser", launch)
-        self.assertIn("camera_workspace", launch)
-        self.assertIn("python_executable", launch)
+        for removed in (
+            "camera_workspace",
+            "python_executable",
+            "start_video_manager",
+            "start_hybrid_video_manager",
+            "start_legacy_video_manager",
+            "hybrid_video",
+            "video_recording_manager",
+        ):
+            self.assertNotIn(removed, launch)
+        self.assertNotIn("video", config)
+        self.assertIn("exposure_topic", config["camera"])
         self.assertIn("start_arm_bringup", launch)
         self.assertIn("priority: 254", mux)
 

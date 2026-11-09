@@ -148,7 +148,7 @@ def decode_events(text):
 
 
 def publishable_events(events):
-    """丢掉右摇杆录像事件。其余事件保持原顺序。"""
+    """丢掉未绑定的右摇杆 r3 事件。其余事件保持原顺序。"""
     kept = []
     for event in events or []:
         if isinstance(event, dict) and event.get('type') == 'r3':
