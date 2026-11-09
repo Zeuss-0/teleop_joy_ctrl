@@ -14,11 +14,18 @@ apply_event_message()：轴夹到 [-1, 1]，报文时间只用来丢掉超前或
 不进入这个类。执行器节点调用 start_arm_worker() 后，连接和 START 在后台线程
 运行。服务未就绪或上一条 START 还没做完时直接拒绝，不把按键积压到恢复之后。
 未启动该线程时（同进程旧节点和单元测试），START 仍在调用线程里同步执行。
+
+START 优先采用 RobotMode 服务的 mode（1–11）。库存 dobot_v4_bringup 不写
+mode，只把 TCP err_id 放进 res，所以 mode 会一直是 0。这时改读 FeedInfo 的
+robot_mode，再用 EnableStatus；RobotStatus.is_enable 为真时视为使能空闲。
+9 和 11 仍然清错。
 """
 
+import json
 import math
 import queue
 import threading
+import time
 
 from teleop_joy_ctrl.joy_parser import (
     ACTIVE_MODE_CAMERA,
@@ -49,10 +56,140 @@ MODE_SINGLE_MOVE = 8
 MODE_ERROR = 9
 MODE_COLLISION = 11
 
+# Dobot 协议里的控制器模式。0 表示还没有有效模式（未初始化，或服务没填 mode）。
+ROBOT_MODE_MIN = 1
+ROBOT_MODE_MAX = 11
+_ENABLED_MODES = (MODE_ENABLE_IDLE, MODE_RUNNING, MODE_SINGLE_MOVE)
+_CLEAR_ERROR_MODES = (MODE_ERROR, MODE_COLLISION)
+
 # 报文时间最多比本机接收时间超前这么多，避免把时钟抖动当成超前攻击。
 STAMP_FUTURE_SKEW = 0.05
 _LOCK_GATED_EVENTS = (EVENT_MODE, EVENT_HOME, EVENT_ADJUST)
 _RETIRED_EVENT_SESSIONS = 8
+_FEED_MODE_KEYS = ('robot_mode', 'RobotMode')
+_FEED_ENABLE_KEYS = ('EnableStatus', 'enable_status')
+
+
+def _coerce_int(value):
+    """把反馈或服务字段收成整数。布尔值不是模式。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            if any(mark in text for mark in ('.', 'e', 'E')):
+                number = float(text)
+                if not number.is_integer():
+                    return None
+                return int(number)
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_enable_flag(value):
+    """EnableStatus：1/True 为已使能，0/False 为未使能，其它值忽略。"""
+    if isinstance(value, bool):
+        return value
+    number = _coerce_int(value)
+    if number == 1:
+        return True
+    if number == 0:
+        return False
+    return None
+
+
+def _usable_robot_mode(value):
+    """1–11 才是控制器模式。0 视为缺失，避免把未填写的 mode 当成状态。"""
+    mode = _coerce_int(value)
+    if mode is None:
+        return None
+    if ROBOT_MODE_MIN <= mode <= ROBOT_MODE_MAX:
+        return mode
+    return None
+
+
+def resolve_robot_mode(service_mode, feed_mode=None, feed_enable=None, status_enable=None):
+    """选择 START 使用的机械臂模式。
+
+    服务返回的 mode 一旦落在 1–11 就优先使用，方便以后 bringup 把字段填对。
+    否则用 FeedInfo 的 robot_mode。再没有数字模式时，EnableStatus 区分
+    使能空闲和未使能。RobotStatus.is_enable 只有为真才当成使能空闲：
+    库存实现里该位在运行中也可能为假，不能把它当成已经下使能。
+    没有任何可靠信号时返回 None。
+    """
+    mode = _usable_robot_mode(service_mode)
+    if mode is not None:
+        return mode
+    mode = _usable_robot_mode(feed_mode)
+    if mode is not None:
+        return mode
+    enable = _coerce_enable_flag(feed_enable)
+    if enable is True:
+        return MODE_ENABLE_IDLE
+    if enable is False:
+        return MODE_DISABLED
+    if status_enable is True:
+        return MODE_ENABLE_IDLE
+    return None
+
+
+def _is_service_exception(exc):
+    return any(cls.__name__ == 'ServiceException' for cls in type(exc).__mro__)
+
+
+def _feed_mapping(payload):
+    """解析 FeedInfo。非法 JSON 返回 None；没有模式字段时返回空记录。"""
+    if isinstance(payload, dict):
+        data = payload
+    else:
+        text = payload
+        if isinstance(text, bytes):
+            try:
+                text = text.decode('utf-8')
+            except UnicodeDecodeError:
+                return None
+        elif not isinstance(text, str):
+            text = getattr(payload, 'data', None)
+            if isinstance(text, bytes):
+                try:
+                    text = text.decode('utf-8')
+                except UnicodeDecodeError:
+                    return None
+        if not isinstance(text, str) or not text.strip():
+            return None
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+    if not isinstance(data, dict):
+        return None
+    parsed = {
+        'saw_mode': False,
+        'mode': None,
+        'saw_enable': False,
+        'enable': None,
+    }
+    for key in _FEED_MODE_KEYS:
+        if key in data:
+            parsed['saw_mode'] = True
+            parsed['mode'] = _coerce_int(data[key])
+            break
+    for key in _FEED_ENABLE_KEYS:
+        if key in data:
+            parsed['saw_enable'] = True
+            parsed['enable'] = _coerce_enable_flag(data[key])
+            break
+    return parsed
 
 
 class ArmServiceGateway(object):
@@ -70,11 +207,15 @@ class ArmServiceGateway(object):
         self.clear_error_client = None
         self.robot_mode_client = None
 
-    def service_names(self):
+    def topic_prefix(self):
         prefix = self.arm.get('service_prefix', '/dobot_v4_bringup').rstrip('/')
         robot_namespace = self.arm.get('robot_namespace', '').strip('/')
         if robot_namespace:
             prefix = '%s/%s' % (prefix, robot_namespace)
+        return prefix
+
+    def service_names(self):
+        prefix = self.topic_prefix()
         srv_prefix = '%s/srv' % prefix
         return srv_prefix, {
             'enable': srv_prefix + '/EnableRobot',
@@ -189,6 +330,16 @@ class TeleopExecutor(object):
 
         self.arm_gateway = ArmServiceGateway(self.arm)
         self.arm_config_enabled = self.arm_gateway.config_enabled
+        self._feedback_stale_s = float(self.arm.get('feedback_stale_time', 1.0))
+        self._arm_feedback_lock = threading.Lock()
+        self._feed_mode = None
+        self._feed_enable = None
+        self._feed_stamp = None
+        self._status_enable = None
+        self._status_stamp = None
+        self._arm_feedback_subs = []
+        self._announced_mode_fallback = False
+        self._feed_parse_warned = False
         self._arm_gate = threading.Lock()
         self._arm_job_pending = False
         self.arm_clients_ready = False
@@ -679,6 +830,7 @@ class TeleopExecutor(object):
             return False
         self._set_arm_clients_ready(True)
         self._loginfo('手柄总控节点: 机械臂服务已就绪，服务前缀=%s' % srv_prefix)
+        self.subscribe_arm_feedback()
         return True
 
     def _set_arm_clients_ready(self, ready):
@@ -769,13 +921,13 @@ class TeleopExecutor(object):
             return
 
         mode = self.query_robot_mode()
-        if mode in (MODE_ERROR, MODE_COLLISION):
+        if mode in _CLEAR_ERROR_MODES:
             self._logwarn(
                 '手柄总控节点: START检测到机械臂报错/碰撞状态(mode=%d)，执行清错' % mode)
             self.call_clear_error()
             return
 
-        if mode in (MODE_ENABLE_IDLE, MODE_RUNNING, MODE_SINGLE_MOVE):
+        if mode in _ENABLED_MODES:
             self._loginfo('手柄总控节点: START -> 下使能机械臂，当前模式=%d' % mode)
             self.call_disable_robot()
             return
@@ -784,22 +936,150 @@ class TeleopExecutor(object):
         self.call_enable_robot()
 
     def query_robot_mode(self):
-        import rospy
-        try:
-            resp = self.arm_gateway.robot_mode_client()
-        except rospy.ServiceException as exc:
-            self._logwarn('手柄总控节点: RobotMode服务调用失败: %s' % exc)
-            return -1
+        service_mode, service_ok = self._read_service_robot_mode()
+        feedback = self._fresh_arm_feedback()
+        resolved = resolve_robot_mode(
+            service_mode if service_ok else None,
+            feedback['mode'],
+            feedback['enable'],
+            feedback['status_enable'],
+        )
+        if resolved is None:
+            return 0 if service_ok else -1
+        used_service = service_ok and _usable_robot_mode(service_mode) is not None
+        if not used_service and not self._announced_mode_fallback:
+            self._announced_mode_fallback = True
+            self._loginfo(
+                '手柄总控节点: 未从 RobotMode.mode 得到有效模式，改用 FeedInfo/RobotStatus，当前模式=%d'
+                % resolved)
+        return resolved
 
-        mode = getattr(resp, 'res', 0)
-        return int(mode)
+    def _read_service_robot_mode(self):
+        """读取 RobotMode.mode。失败时返回 (None, False)。不使用 res。"""
+        client = self.arm_gateway.robot_mode_client
+        if client is None:
+            return None, False
+        try:
+            resp = client()
+        except Exception as exc:
+            if not _is_service_exception(exc):
+                raise
+            self._logwarn('手柄总控节点: RobotMode服务调用失败: %s' % exc)
+            return None, False
+        return getattr(resp, 'mode', None), True
+
+    def _call_arm_client(self, client, service_name):
+        try:
+            client()
+        except Exception as exc:
+            if not _is_service_exception(exc):
+                raise
+            self._logerr('手柄总控节点: %s服务调用失败: %s' % (service_name, exc))
+            return False
+        return True
+
+    def subscribe_arm_feedback(self):
+        """订阅库存 bringup 已经在发的反馈，不改 Dobot 包。"""
+        if self._arm_feedback_subs:
+            return True
+        try:
+            import rospy
+            from std_msgs.msg import String
+        except ImportError:
+            self._logwarn(
+                '手柄总控节点: 无法订阅机械臂反馈话题，START 将只使用 RobotMode.mode')
+            return False
+
+        prefix = self.arm_gateway.topic_prefix()
+        subs = []
+        try:
+            subs.append(rospy.Subscriber(
+                '%s/msg/FeedInfo' % prefix,
+                String,
+                self._on_feed_info,
+                queue_size=1,
+                buff_size=65536,
+            ))
+        except Exception as exc:
+            self._logwarn('手柄总控节点: 订阅 FeedInfo 失败: %s' % exc)
+            return False
+
+        try:
+            from dobot_v4_bringup.msg import RobotStatus
+        except ImportError:
+            RobotStatus = None
+        if RobotStatus is not None:
+            try:
+                subs.append(rospy.Subscriber(
+                    '%s/msg/RobotStatus' % prefix,
+                    RobotStatus,
+                    self._on_robot_status,
+                    queue_size=1,
+                ))
+            except Exception as exc:
+                self._logwarn('手柄总控节点: 订阅 RobotStatus 失败: %s' % exc)
+        self._arm_feedback_subs = subs
+        self._loginfo(
+            '手柄总控节点: 已订阅机械臂反馈 %s/msg/FeedInfo' % prefix)
+        return True
+
+    def _on_feed_info(self, msg):
+        self.ingest_feed_info(getattr(msg, 'data', ''))
+
+    def _on_robot_status(self, msg):
+        if not hasattr(msg, 'is_enable'):
+            return
+        self.ingest_robot_status(bool(msg.is_enable))
+
+    def ingest_feed_info(self, payload, now=None):
+        """记录一条 FeedInfo。payload 可以是 JSON 字符串或字典。"""
+        parsed = _feed_mapping(payload)
+        if parsed is None:
+            if not self._feed_parse_warned:
+                self._feed_parse_warned = True
+                self._logwarn(
+                    '手柄总控节点: FeedInfo 不是可解析的 JSON，暂时无法用它判断机械臂模式')
+            return False
+        if not parsed['saw_mode'] and not parsed['saw_enable']:
+            return False
+        if now is None:
+            now = time.monotonic()
+        with self._arm_feedback_lock:
+            if parsed['saw_mode']:
+                self._feed_mode = parsed['mode']
+            if parsed['saw_enable']:
+                self._feed_enable = parsed['enable']
+            self._feed_stamp = now
+        return True
+
+    def ingest_robot_status(self, is_enable, now=None):
+        if now is None:
+            now = time.monotonic()
+        with self._arm_feedback_lock:
+            self._status_enable = True if is_enable else False
+            self._status_stamp = now
+
+    def _fresh_arm_feedback(self, now=None):
+        if now is None:
+            now = time.monotonic()
+        limit = self._feedback_stale_s
+        with self._arm_feedback_lock:
+            feed_fresh = (
+                self._feed_stamp is not None
+                and (now - self._feed_stamp) <= limit
+            )
+            status_fresh = (
+                self._status_stamp is not None
+                and (now - self._status_stamp) <= limit
+            )
+            return {
+                'mode': self._feed_mode if feed_fresh else None,
+                'enable': self._feed_enable if feed_fresh else None,
+                'status_enable': self._status_enable if status_fresh else None,
+            }
 
     def call_clear_error(self):
-        import rospy
-        try:
-            self.arm_gateway.clear_error_client()
-        except rospy.ServiceException as exc:
-            self._logerr('手柄总控节点: ClearError服务调用失败: %s' % exc)
+        if not self._call_arm_client(self.arm_gateway.clear_error_client, 'ClearError'):
             return
         self._sleep(float(self.arm.get('command_settle_time', 0.3)))
         mode = self.query_robot_mode()
@@ -810,15 +1090,11 @@ class TeleopExecutor(object):
             self.publish_state('机械臂模式=%d 清错后' % mode)
 
     def call_enable_robot(self):
-        import rospy
-        try:
-            self.arm_gateway.enable_client()
-        except rospy.ServiceException as exc:
-            self._logerr('手柄总控节点: EnableRobot服务调用失败: %s' % exc)
+        if not self._call_arm_client(self.arm_gateway.enable_client, 'EnableRobot'):
             return
         self._sleep(float(self.arm.get('command_settle_time', 0.3)))
         mode = self.query_robot_mode()
-        if mode in (MODE_ENABLE_IDLE, MODE_RUNNING, MODE_SINGLE_MOVE):
+        if mode in _ENABLED_MODES:
             self.log_success('机械臂上使能指令 服务=EnableRobot 执行后模式=%d' % mode)
             self.publish_state('机械臂模式=%d 上使能后' % mode)
         else:
@@ -827,11 +1103,7 @@ class TeleopExecutor(object):
             self.publish_state('机械臂上使能后模式=%d' % mode)
 
     def call_disable_robot(self):
-        import rospy
-        try:
-            self.arm_gateway.disable_client()
-        except rospy.ServiceException as exc:
-            self._logerr('手柄总控节点: DisableRobot服务调用失败: %s' % exc)
+        if not self._call_arm_client(self.arm_gateway.disable_client, 'DisableRobot'):
             return
         self._sleep(float(self.arm.get('command_settle_time', 0.3)))
         mode = self.query_robot_mode()
