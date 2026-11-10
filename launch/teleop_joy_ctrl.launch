@@ -9,7 +9,7 @@
   <arg name="start_arm_bringup" default="false" />
   <arg name="start_light_controller" default="true" />
   <!-- Same-process node is the default. Set legacy_single_node:=false for the two-node path. -->
-  <arg name="legacy_single_node" default="true" />
+  <arg name="legacy_single_node" default="false" />
   <arg name="start_takeover_mux" default="true" />
   <arg name="restore_system_teleop_on_shutdown" default="true" />
   <arg name="system_teleop_package" default="robot_driver" />
